@@ -4,8 +4,8 @@
   --text:#f0f2f7;--muted:#6b7280;--muted2:#9ca3af;
   --accent:#e8ff47;--accent2:#47d4ff;--accent3:#ff6b6b;--accent4:#a78bfa;
   --green:#4ade80;--red:#f87171;
-  --font-ui:'Inter',sans-serif;
-  --base-size:15px;
+  --font-ui:Arial,Helvetica,sans-serif;
+  --base-size:12px;
 }
 body.light-theme{
   --bg:#f3f5f8;--surface:#ffffff;--surface2:#eef2f7;--surface3:#d7dee8;
@@ -18,7 +18,7 @@ body.light-theme{
 body{font-family:var(--font-ui);font-size:var(--base-size);line-height:1.5;background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden;transition:background .25s ease,color .25s ease;}
 body::before{content:'';position:fixed;inset:0;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");pointer-events:none;z-index:0;opacity:.4;}
 .app{position:relative;z-index:1;}
-.screen{min-height:100vh;}
+.screen{min-height:80vh;}
 .screen[hidden]{display:none !important;}
 .auth-screen,.setup-screen,.hub-screen{display:grid;place-items:center;padding:28px;}
 .auth-card{width:min(100%,480px);padding:28px;border:1px solid var(--border);border-radius:24px;background:linear-gradient(180deg,var(--surface) 0%,rgba(255,255,255,.02) 100%);box-shadow:0 20px 60px rgba(0,0,0,.18);}
@@ -38,14 +38,6 @@ body::before{content:'';position:fixed;inset:0;background-image:url("data:image/
 .auth-switch-btn.active{background:var(--surface);color:var(--text);box-shadow:0 6px 18px rgba(0,0,0,.08);}
 .auth-form{display:grid;gap:14px;}
 .auth-local-fields{display:grid;gap:14px;}
-.auth-alt{display:grid;gap:12px;}
-.auth-divider{position:relative;text-align:center;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.12em;}
-.auth-divider::before{content:'';position:absolute;left:0;right:0;top:50%;height:1px;background:var(--border);}
-.auth-divider span{position:relative;display:inline-block;padding:0 10px;background:var(--surface);}
-.auth-google-btn{justify-content:center;}
-.auth-google-slot{display:flex;justify-content:center;align-items:center;min-height:44px;width:100%;}
-.auth-google-slot > div{display:flex;justify-content:center;width:100%;}
-.auth-google-slot iframe{margin:0 auto;}
 .auth-tip{font-size:12px;color:var(--muted);text-align:center;}
 .setup-shell{width:min(100%,760px);}
 .setup-grid{display:grid;grid-template-columns:minmax(0,2fr) minmax(120px,1fr) 96px;gap:12px;align-items:end;}
@@ -232,15 +224,13 @@ main{padding:24px 36px;display:grid;gap:18px;}
 .pcbar-cur{margin-bottom:4px;}
 .pcbar-prev{opacity:.35;}
 .pcvals{width:120px;text-align:right;font-size:12px;}
-.platform-icon{width:28px;height:28px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;position:relative;overflow:hidden;background:rgba(255,255,255,.96);border:1px solid rgba(15,23,42,.08);box-shadow:0 1px 2px rgba(15,23,42,.08);}
-.platform-favicon{width:18px;height:18px;object-fit:contain;display:block;}
+.platform-icon{width:28px;height:28px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;position:relative;overflow:hidden;border:1px solid rgba(15,23,42,.08);box-shadow:0 1px 2px rgba(15,23,42,.08);font-size:11px;font-weight:800;}
 .platform-badge{display:inline-flex;align-items:center;gap:10px;}
 .platform-summary-table{table-layout:auto;font-size:13px;}
 .platform-summary-table th,.platform-summary-table td{padding:9px 8px;}
 .platform-summary-table th:first-child,.platform-summary-table td:first-child{width:22%;}
 .platform-summary-table .platform-badge{gap:7px;}
 .platform-summary-table .platform-icon{width:24px;height:24px;border-radius:7px;}
-.platform-summary-table .platform-favicon{width:15px;height:15px;}
 .platform-summary-table .ppill{padding:2px 7px;font-size:11px;}
 .compare-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px;}
 .compare-card{background:var(--surface2);border-radius:10px;padding:13px;}
@@ -331,6 +321,390 @@ main{padding:24px 36px;display:grid;gap:18px;}
 .pdf-export-root .rtable td,.pdf-export-root .rtable th{border-color:rgba(15,23,42,.08);}
 .pdf-export-root .msec-title,.pdf-export-root .card-sub,.pdf-export-root .rkpi-label,.pdf-export-root .cvis-month,.pdf-export-root .pcval-var{color:var(--muted);}
 .pdf-export-root .neg{color:var(--red);}
+
+/* Ajustes proporcionais pós-redução de 20% */
+.header-topline {
+  gap: 12px;
+}
+
+.mtitle {
+  font-size: 20px;
+}
+
+.card-title {
+  font-size: 15px;
+}
+
+.kpi-value {
+  font-size: 26px;
+}
+
+.projection-value {
+  font-size: 22px;
+}
+
+.pricing-result {
+  font-size: 24px;
+}
+
+.commission-title {
+  font-size: 24px;
+}
+
+.commission-value {
+  font-size: 28px;
+}
+
+.hub-card strong {
+  font-size: 22px;
+}
+
+.setup-item-copy strong {
+  font-size: 13px;
+}
+
+.btn {
+  padding: 8px 14px;
+  font-size: 12px;
+}
+
+.month-tab {
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+.finput {
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.kpi-card {
+  padding: 16px;
+}
+
+.card {
+  padding: 18px;
+}
+
+.platform-icon {
+  width: 24px;
+  height: 24px;
+  font-size: 10px;
+}
+
+.menu-toggle {
+  width: 36px;
+  height: 36px;
+  font-size: 16px;
+}
+
+.theme-icon-btn {
+  width: 36px;
+  height: 36px;
+  font-size: 16px;
+}
+
+.logo {
+  font-size: 17px;
+}
+
+.user-badge {
+  padding: 7px 10px;
+  font-size: 11px;
+}
+
+.auth-status {
+  font-size: 11px;
+}
+
+.chart-box {
+  height: 190px;
+}
+
+.donut-box {
+  height: 180px;
+}
+
+.modal {
+  padding: 24px;
+}
+
+.rkpis {
+  gap: 10px;
+}
+
+.rkpi-val {
+  font-size: 22px;
+}
+
+.cvis-val {
+  font-size: 18px;
+}
+
+.wbcon {
+  height: 75px;
+}
+
+.dleg-pct {
+  font-size: 13px;
+}
+
+.ceditable {
+  min-width: 35px;
+}
+
+/* ─── Redução de elementos visuais (-20%) ─── */
+
+/* Cards e containers */
+.card,
+.kpi-card,
+.projection-card,
+.pricing-card,
+.setup-item,
+.hub-card,
+.compare-card,
+.rkpi,
+.cvis-item {
+  padding: 14px !important;
+  border-radius: 12px !important;
+}
+
+/* Modais */
+.modal {
+  padding: 22px !important;
+  border-radius: 14px !important;
+}
+
+.auth-card,
+.hub-shell {
+  padding: 22px !important;
+  border-radius: 20px !important;
+}
+
+/* KPIs */
+.kpi-card {
+  padding: 16px !important;
+}
+
+.kpi-row {
+  gap: 10px !important;
+}
+
+/* Grids e gaps */
+.grid2,
+.grid2b {
+  gap: 12px !important;
+}
+
+.pricing-platform-grid {
+  gap: 12px !important;
+  grid-template-columns: repeat(2, 1fr) !important;
+}
+
+.pricing-grid {
+  gap: 10px !important;
+}
+
+.pricing-kpis {
+  gap: 8px !important;
+}
+
+.pricing-kpis div {
+  padding: 10px !important;
+}
+
+.projection-grid {
+  gap: 10px !important;
+}
+
+.rkpis {
+  gap: 10px !important;
+}
+
+.compare-grid {
+  gap: 8px !important;
+}
+
+/* Gráficos */
+.chart-box {
+  height: 170px !important;
+}
+
+.daily-chart-box {
+  min-height: 260px !important;
+}
+
+.donut-box {
+  height: 160px !important;
+}
+
+/* Botões */
+.btn {
+  padding: 7px 12px !important;
+  border-radius: 8px !important;
+}
+
+.month-tab {
+  padding: 6px 10px !important;
+}
+
+.itab {
+  padding: 7px 12px !important;
+}
+
+/* Inputs */
+.finput {
+  padding: 7px 10px !important;
+  border-radius: 7px !important;
+}
+
+/* Header */
+header {
+  padding: 16px 28px !important;
+}
+
+/* Main content */
+main,
+.calculator-main {
+  padding: 18px 28px !important;
+  gap: 14px !important;
+}
+
+/* Ícones de plataforma */
+.platform-icon {
+  width: 22px !important;
+  height: 22px !important;
+  border-radius: 6px !important;
+}
+
+/* Barras semanais */
+.wbcon {
+  height: 65px !important;
+}
+
+/* Tabelas */
+.dtable td,
+.ptable td,
+.rtable td {
+  padding: 7px 10px !important;
+}
+
+.dtable th,
+.ptable th,
+.rtable th {
+  padding: 7px 10px !important;
+}
+
+/* Comissão */
+.commission-shell {
+  padding: 18px !important;
+}
+
+.commission-value-wrap {
+  min-width: 200px !important;
+  padding: 14px !important;
+}
+
+/* Badges e pills */
+.user-badge {
+  padding: 6px 10px !important;
+}
+
+.ppill {
+  padding: 2px 6px !important;
+}
+
+/* Menu */
+.menu-toggle {
+  width: 36px !important;
+  height: 36px !important;
+  border-radius: 10px !important;
+}
+
+.theme-icon-btn {
+  width: 36px !important;
+  height: 36px !important;
+}
+
+.menu-dropdown {
+  padding: 12px !important;
+  border-radius: 14px !important;
+}
+
+/* Modal header */
+.mheader {
+  margin-bottom: 18px !important;
+}
+
+/* Semana */
+.wgrid {
+  gap: 8px !important;
+}
+
+/* Config */
+.setup-grid {
+  gap: 10px !important;
+}
+
+.setup-item {
+  padding: 10px 12px !important;
+  border-radius: 10px !important;
+}
+
+/* Hub */
+.hub-grid {
+  gap: 14px !important;
+}
+
+.hub-card {
+  padding: 20px !important;
+  border-radius: 18px !important;
+}
+
+/* Calculadora */
+.pricing-card {
+  padding: 16px !important;
+  border-radius: 14px !important;
+}
+
+.pricing-card-head {
+  gap: 10px !important;
+}
+
+.pricing-note {
+  padding: 10px 12px !important;
+}
+
+/* Projeção */
+.projection-card {
+  padding: 14px !important;
+}
+
+/* Comparação */
+.compare-card {
+  padding: 10px !important;
+}
+
+.compare-row {
+  padding: 5px 8px !important;
+  border-radius: 6px !important;
+}
+
+/* Melhores dias */
+.bdrow {
+  padding: 8px 10px !important;
+  border-radius: 8px !important;
+}
+
+/* Legendas */
+.dleg-item {
+  gap: 8px !important;
+}
+
+.dleg-bar {
+  width: 60px !important;
+}
+
 @media(max-width:1180px){
   header{padding:18px 22px;}
   main{padding:18px 22px;}

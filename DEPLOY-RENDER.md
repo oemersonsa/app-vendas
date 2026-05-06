@@ -2,11 +2,12 @@
 
 ## O que mudou
 
-Este projeto agora pode rodar no Render como um unico servico Node:
+Este projeto agora roda como um unico servico Node:
 
 - o frontend continua sendo servido pelo `server.js`
-- o arquivo `/google-config.js` passa a ser gerado pelo backend
-- o login Google e o Google Drive usam as variaveis de ambiente do servidor
+- os dados de negocio ficam no SQLite em `.data/dashboard-vendas.sqlite`
+- autenticacao, plataformas, vendas, devolucoes e dashboard passam pela API
+- backups e restauracoes sao feitos por arquivo JSON exportado/importado no app
 
 ## Passo a passo
 
@@ -16,23 +17,13 @@ Este projeto agora pode rodar no Render como um unico servico Node:
    - Build Command: `npm install`
    - Start Command: `npm start`
 4. Defina as variaveis de ambiente:
+   - `NODE_VERSION=24`
    - `APP_ORIGIN=https://SEU-APP.onrender.com`
-   - `GOOGLE_CLIENT_ID=seu-client-id.apps.googleusercontent.com`
-   - `GOOGLE_CLIENT_SECRET=seu-client-secret`
-   - `GOOGLE_REDIRECT_URI=https://SEU-APP.onrender.com/api/google-drive/oauth/callback`
-5. Faça o deploy.
-
-## Google Cloud
-
-No Google Cloud Console, atualize o OAuth Client Web com:
-
-- Authorized JavaScript origins:
-  - `https://SEU-APP.onrender.com`
-- Authorized redirect URIs:
-  - `https://SEU-APP.onrender.com/api/google-drive/oauth/callback`
+   - `SQLITE_DATABASE_PATH=.data/dashboard-vendas.sqlite`
+5. Faca o deploy.
 
 ## Observacoes
 
+- O app usa `node:sqlite`, por isso precisa de Node 22.5 ou superior.
+- Em Render Free, o disco do servico pode ser efemero. Para dados duraveis, use um Persistent Disk pago ou migre a camada `database.js` para PostgreSQL.
 - O GitHub Pages nao atende este projeto porque ele nao executa `server.js`.
-- Se frontend e backend estiverem no mesmo dominio do Render, deixe `backendBaseUrl` vazio.
-- No plano gratuito, o Render pode colocar o servico para dormir quando ficar inativo.

@@ -3,4 +3,5 @@ Desktop.ini
 .env
 .data/
 node_modules/
+dist/
 bugs.txt

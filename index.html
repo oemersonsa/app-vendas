@@ -5,14 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Dashboard de Vendas</title>
 <link rel="icon" type="image/svg+xml" href="./favicon.svg">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="./styles.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" defer></script>
-<script src="https://accounts.google.com/gsi/client" async defer></script>
-<script src="./google-config.js"></script>
 <script src="./app.js" defer></script>
 </head>
 <body>
@@ -42,11 +37,7 @@
         <div class="actions-row">
           <button class="btn btn-primary" id="authSubmitButton" type="button">Entrar</button>
         </div>
-        <div class="auth-alt">
-          <div class="auth-divider" id="authGoogleDivider"><span>ou</span></div>
-          <div class="auth-google-slot" id="googleSignInSlot" aria-live="polite"></div>
-          <div class="auth-tip" id="googleAuthHint">Ao entrar com Google, o app tenta carregar automaticamente o arquivo sincronizado no Google Drive.</div>
-        </div>
+        <div class="auth-tip" id="authHint">Ao entrar, seus dados ficam salvos no servidor do app.</div>
       </div>
     </div>
   </section>
@@ -129,8 +120,6 @@
                   <button class="btn btn-secondary menu-action" id="managePlatformsButton" type="button" data-icon="▦">Plataformas</button>
                   <button class="btn btn-secondary menu-action" id="changePasswordButton" type="button" data-icon="🔐">Trocar Senha</button>
                   <button class="btn btn-secondary menu-action" id="saveNowButton" type="button" data-icon="💾">Salvar Agora</button>
-                  <button class="btn btn-secondary menu-action" id="syncGoogleDriveButton" type="button" data-icon="☁">Sincronizar Google Drive</button>
-                  <button class="btn btn-secondary menu-action" id="restoreGoogleDriveButton" type="button" data-icon="⇩">Restaurar do Google Drive</button>
                   <button class="btn btn-secondary menu-action" id="exportBackupButton" type="button" data-icon="⤴">Exportar Backup</button>
                   <button class="btn btn-secondary menu-action" id="importBackupButton" type="button" data-icon="⤵">Importar Backup</button>
                   <button class="btn btn-secondary menu-action" id="logoutButton" type="button" data-icon="↩">Sair</button>
@@ -141,7 +130,6 @@
         <div class="header-meta">
           <div class="user-badge" id="currentUserBadge">Usuario: -</div>
           <div class="auth-status" id="authStatus">Dados salvos nesta maquina</div>
-          <div class="auth-status" id="googleDriveStatus">Google Drive desconectado</div>
         </div>
       </div>
       <div class="logo header-brand"><div class="logo-dot"></div><span id="brandTitle">Dashboard de Vendas</span></div>

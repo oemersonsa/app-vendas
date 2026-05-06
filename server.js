@@ -3,21 +3,15 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { URL } = require("url");
+const database = require("./database");
 
 loadEnvFile(path.join(__dirname, ".env"));
 
 const PORT = Number(process.env.PORT || 3000);
+const HOST = String(process.env.HOST || "0.0.0.0");
 const APP_ORIGIN = String(process.env.APP_ORIGIN || `http://localhost:${PORT}`).replace(/\/$/, "");
-const GOOGLE_CLIENT_ID = String(process.env.GOOGLE_CLIENT_ID || "").trim();
-const GOOGLE_CLIENT_SECRET = String(process.env.GOOGLE_CLIENT_SECRET || "").trim();
-const GOOGLE_REDIRECT_URI = String(process.env.GOOGLE_REDIRECT_URI || `${APP_ORIGIN}/api/google-drive/oauth/callback`).trim();
-const GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.appdata";
-const GOOGLE_DRIVE_FILE_NAME = "dashboard-vendas-state.json";
-const TOKEN_STORE_FILE = path.join(__dirname, ".data", "google-drive-connections.json");
-const SESSION_STORE_FILE = path.join(__dirname, ".data", "sessions.json");
-const USER_STORE_FILE = path.join(__dirname, ".data", "users.json");
-const CALLBACK_HTML_TITLE = "Google Drive conectado";
-const FETCH_TIMEOUT_MS = 15_000;
+const DATA_DIR = process.env.SQLITE_DATA_DIR || path.join(__dirname, ".data");
+const SESSION_STORE_FILE = path.join(DATA_DIR, "sessions.json");
 
 // ─── Rate limiting ────────────────────────────────────────────────────────────
 // Max requests per window per IP on /api/* routes
@@ -31,16 +25,10 @@ const STATIC_FILES = new Map([
   ["/index.html", "index.html"],
   ["/app.js", "app.js"],
   ["/styles.css", "styles.css"],
-  ["/google-config.js", "google-config.js"],
   ["/favicon.svg", "favicon.svg"],
 ]);
 
 // ─── In-memory state ─────────────────────────────────────────────────────────
-const pendingOAuthStates = new Map(); // state -> { username, createdAt }
-let tokenStoreLock = false;
-let tokenStoreLockQueue = [];
-let userStoreLock = false;
-let userStoreLockQueue = [];
 
 // ─── Logger ───────────────────────────────────────────────────────────────────
 const logger = {
@@ -74,128 +62,17 @@ function loadEnvFile(filePath) {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-function isGoogleBackendConfigured() {
-  return Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET && GOOGLE_REDIRECT_URI);
-}
-
 function ensureDataDir() {
-  fs.mkdirSync(path.dirname(TOKEN_STORE_FILE), { recursive: true });
-}
-
-function escapeHtml(value) {
-  return String(value || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-function acquireUserStoreLock() {
-  return new Promise((resolve) => {
-    if (!userStoreLock) {
-      userStoreLock = true;
-      resolve();
-    } else {
-      userStoreLockQueue.push(resolve);
-    }
-  });
-}
-
-function releaseUserStoreLock() {
-  if (userStoreLockQueue.length > 0) {
-    const next = userStoreLockQueue.shift();
-    next();
-  } else {
-    userStoreLock = false;
-  }
-}
-
-// ─── Token store with mutex ───────────────────────────────────────────────────
-function acquireTokenStoreLock() {
-  return new Promise((resolve) => {
-    if (!tokenStoreLock) {
-      tokenStoreLock = true;
-      resolve();
-    } else {
-      tokenStoreLockQueue.push(resolve);
-    }
-  });
-}
-
-function releaseTokenStoreLock() {
-  if (tokenStoreLockQueue.length > 0) {
-    const next = tokenStoreLockQueue.shift();
-    next();
-  } else {
-    tokenStoreLock = false;
-  }
-}
-
-function readTokenStore() {
-  ensureDataDir();
-  if (!fs.existsSync(TOKEN_STORE_FILE)) return { users: {} };
-  try {
-    return JSON.parse(fs.readFileSync(TOKEN_STORE_FILE, "utf8"));
-  } catch {
-    return { users: {} };
-  }
-}
-
-function writeTokenStore(store) {
-  ensureDataDir();
-  fs.writeFileSync(TOKEN_STORE_FILE, JSON.stringify(store, null, 2));
-}
-
-function getUserConnection(username) {
-  if (!username) return null;
-  const store = readTokenStore();
-  return store.users?.[username] || null;
-}
-
-async function saveUserConnection(username, connection) {
-  await acquireTokenStoreLock();
-  try {
-    const store = readTokenStore();
-    if (!store.users) store.users = {};
-    store.users[username] = connection;
-    writeTokenStore(store);
-  } finally {
-    releaseTokenStoreLock();
-  }
-}
-
-function readUserStore() {
-  ensureDataDir();
-  if (!fs.existsSync(USER_STORE_FILE)) return { users: {} };
-  try {
-    return JSON.parse(fs.readFileSync(USER_STORE_FILE, "utf8"));
-  } catch {
-    return { users: {} };
-  }
-}
-
-function writeUserStore(store) {
-  ensureDataDir();
-  fs.writeFileSync(USER_STORE_FILE, JSON.stringify(store, null, 2));
+  fs.mkdirSync(path.dirname(SESSION_STORE_FILE), { recursive: true });
 }
 
 function getUserRecord(username) {
   if (!username) return null;
-  const store = readUserStore();
-  return store.users?.[username] || null;
+  return database.getUserRecord(username);
 }
 
 async function saveUserRecord(username, userRecord) {
-  await acquireUserStoreLock();
-  try {
-    const store = readUserStore();
-    if (!store.users) store.users = {};
-    store.users[username] = userRecord;
-    writeUserStore(store);
-  } finally {
-    releaseUserStoreLock();
-  }
+  database.saveUserRecord(username, userRecord);
 }
 
 function hashPassword(password) {
@@ -213,12 +90,9 @@ function verifyPassword(password, passwordHash) {
   return crypto.timingSafeEqual(candidate, expected);
 }
 
-function isValidGoogleIssuer(value) {
-  return value === "accounts.google.com" || value === "https://accounts.google.com";
-}
-
 // ─── Session store ────────────────────────────────────────────────────────────
-const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+// Alterar de 7 dias para 365 dias (praticamente permanente)
+const SESSION_TTL_MS = 365 * 24 * 60 * 60 * 1000; // 1 ano
 
 function readSessionStore() {
   ensureDataDir();
@@ -232,7 +106,12 @@ function readSessionStore() {
 
 function writeSessionStore(store) {
   ensureDataDir();
-  fs.writeFileSync(SESSION_STORE_FILE, JSON.stringify(store, null, 2));
+  // Write to a temp file first, then rename — this is an atomic operation on
+  // all major OSes and prevents a corrupt sessions.json if the app is closed
+  // mid-write (common in Electron when the user closes the window).
+  const tmp = SESSION_STORE_FILE + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(store, null, 2));
+  fs.renameSync(tmp, SESSION_STORE_FILE);
 }
 
 function createSession(username) {
@@ -279,29 +158,12 @@ function cleanupExpiredSessions() {
   if (changed) writeSessionStore(store);
 }
 
-// ─── Access token cache (per username) ───────────────────────────────────────
-const accessTokenCache = new Map(); // username -> { token, expiresAt }
-const ACCESS_TOKEN_SKEW_MS = 60_000;
-
-function getCachedAccessToken(username) {
-  const entry = accessTokenCache.get(username);
-  if (!entry) return null;
-  if (Date.now() >= entry.expiresAt - ACCESS_TOKEN_SKEW_MS) {
-    accessTokenCache.delete(username);
-    return null;
-  }
-  return entry.token;
-}
-
-function setCachedAccessToken(username, token, expiresInSeconds) {
-  accessTokenCache.set(username, {
-    token,
-    expiresAt: Date.now() + (expiresInSeconds || 3600) * 1000,
-  });
-}
-
 // ─── Rate limiter ─────────────────────────────────────────────────────────────
 function checkRateLimit(ip) {
+  // Requests from the loopback (Electron's embedded server) must never be
+  // rate-limited — they all share the same IP and would hit the cap instantly.
+  if (ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1") return true;
+
   const now = Date.now();
   const entry = rateLimitMap.get(ip);
   if (!entry || now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
@@ -346,11 +208,24 @@ function sendText(res, statusCode, text) {
   res.end(text);
 }
 
-function setCorsHeaders(res) {
-  res.setHeader("Access-Control-Allow-Origin", APP_ORIGIN);
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  res.setHeader("Access-Control-Allow-Credentials", "true");
+// Substitua a função setCorsHeaders (linhas ~272)
+function setCorsHeaders(res, req) {
+  const requestOrigin = req ? String(req.headers["origin"] || "") : "";
+  
+  // Em Electron, a origem pode ser null (file://) ou vazia
+  if (requestOrigin === "null" || requestOrigin === "") {
+    // Permitir acesso local sem restrições CORS
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  } else {
+    // Para requisições de navegador, usar a origem específica
+    res.setHeader("Access-Control-Allow-Origin", requestOrigin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  }
 }
 
 async function readJsonBody(req) {
@@ -379,239 +254,6 @@ function extractSessionToken(req, url = null) {
     if (tokenFromQuery) return tokenFromQuery;
   }
   return null;
-}
-
-// ─── OAuth popup HTML ─────────────────────────────────────────────────────────
-function buildPopupResponse({ success, username = "", sessionToken = "", error = "" }) {
-  const payload = JSON.stringify({
-    type: "google-drive-connected",
-    success,
-    username,
-    sessionToken,
-    error,
-  });
-  return `<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-  <meta charset="UTF-8">
-  <title>${CALLBACK_HTML_TITLE}</title>
-  <style>
-    body{font-family:Arial,sans-serif;padding:24px;background:#f5f5f5;color:#111}
-    .card{max-width:420px;margin:40px auto;padding:24px;border-radius:16px;background:#fff;box-shadow:0 12px 32px rgba(0,0,0,.08)}
-    h1{font-size:20px;margin:0 0 10px}
-    p{margin:0;color:#444;line-height:1.5}
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h1>${success ? "Google Drive conectado" : "Falha ao conectar o Google Drive"}</h1>
-    <p>${success
-      ? "Voce ja pode voltar para o dashboard. Esta janela sera fechada automaticamente."
-      : escapeHtml(error || "Nao foi possivel concluir a autorizacao.")
-    }</p>
-  </div>
-  <script>
-    const payload = ${payload};
-    if (window.opener) {
-      window.opener.postMessage(payload, ${JSON.stringify(APP_ORIGIN)});
-    }
-    setTimeout(() => window.close(), 1200);
-  </script>
-</body>
-</html>`;
-}
-
-// ─── JWT decoder (id_token) ───────────────────────────────────────────────────
-function decodeJwtPayload(token) {
-  try {
-    const [, payload] = String(token || "").split(".");
-    if (!payload) return null;
-    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
-    const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
-    return JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
-  } catch {
-    return null;
-  }
-}
-
-// ─── Fetch with timeout ───────────────────────────────────────────────────────
-async function fetchWithTimeout(url, options = {}, timeoutMs = FETCH_TIMEOUT_MS) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...options, signal: controller.signal });
-  } catch (err) {
-    if (err.name === "AbortError") throw new Error("external_request_timeout");
-    throw err;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-// ─── Google OAuth ─────────────────────────────────────────────────────────────
-async function exchangeAuthorizationCode(code) {
-  const response = await fetchWithTimeout("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      code,
-      client_id: GOOGLE_CLIENT_ID,
-      client_secret: GOOGLE_CLIENT_SECRET,
-      redirect_uri: GOOGLE_REDIRECT_URI,
-      grant_type: "authorization_code",
-    }),
-  });
-  if (!response.ok) throw new Error("google_token_exchange_failed");
-  return response.json();
-}
-
-async function refreshAccessToken(refreshToken) {
-  const response = await fetchWithTimeout("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: GOOGLE_CLIENT_ID,
-      client_secret: GOOGLE_CLIENT_SECRET,
-      refresh_token: refreshToken,
-      grant_type: "refresh_token",
-    }),
-  });
-  if (!response.ok) throw new Error("google_refresh_failed");
-  return response.json();
-}
-
-// ─── Google Drive helpers ─────────────────────────────────────────────────────
-async function fetchDriveJson(accessToken, url, options = {}) {
-  const response = await fetchWithTimeout(url, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      ...(options.headers || {}),
-    },
-  });
-  if (!response.ok) {
-    // Don't leak Google's raw error body to the client
-    logger.error("Google Drive request failed", { url, status: response.status });
-    throw new Error(`${options.errorCode || "google_drive_request_failed"}_${response.status}`);
-  }
-  return response.json();
-}
-
-async function getDriveAccessTokenForUser(username) {
-  if (!isGoogleBackendConfigured()) throw new Error("google_drive_backend_not_configured");
-
-  const cached = getCachedAccessToken(username);
-  if (cached) {
-    const connection = getUserConnection(username);
-    return { accessToken: cached, connection };
-  }
-
-  const connection = getUserConnection(username);
-  if (!connection?.refreshToken) throw new Error("google_drive_not_connected");
-
-  const refreshed = await refreshAccessToken(connection.refreshToken);
-  const accessToken = String(refreshed.access_token || "");
-  const expiresIn = Number(refreshed.expires_in || 3600);
-  setCachedAccessToken(username, accessToken, expiresIn);
-
-  return { accessToken, connection };
-}
-
-async function findDriveFile(accessToken) {
-  const query = encodeURIComponent(
-    `name='${GOOGLE_DRIVE_FILE_NAME}' and 'appDataFolder' in parents and trashed=false`
-  );
-  const data = await fetchDriveJson(
-    accessToken,
-    `https://www.googleapis.com/drive/v3/files?q=${query}&spaces=appDataFolder&fields=files(id,name,modifiedTime)&pageSize=1`,
-    { errorCode: "google_drive_lookup_failed" }
-  );
-  return data.files?.[0] || null;
-}
-
-async function uploadBackupForUser(username, payload) {
-  const { accessToken, connection } = await getDriveAccessTokenForUser(username);
-  const metadata = await findDriveFile(accessToken);
-  const boundary = `dashboard-vendas-${Date.now()}`;
-  const bodyPayload = JSON.stringify(payload, null, 2);
-  const fileMetadata = metadata?.id
-    ? { name: GOOGLE_DRIVE_FILE_NAME, mimeType: "application/json" }
-    : { name: GOOGLE_DRIVE_FILE_NAME, mimeType: "application/json", parents: ["appDataFolder"] };
-
-  const multipartBody =
-    `--${boundary}\r\n` +
-    "Content-Type: application/json; charset=UTF-8\r\n\r\n" +
-    `${JSON.stringify(fileMetadata)}\r\n` +
-    `--${boundary}\r\n` +
-    "Content-Type: application/json; charset=UTF-8\r\n\r\n" +
-    `${bodyPayload}\r\n` +
-    `--${boundary}--`;
-
-  const endpoint = metadata?.id
-    ? `https://www.googleapis.com/upload/drive/v3/files/${metadata.id}?uploadType=multipart&fields=id,modifiedTime`
-    : "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,modifiedTime";
-
-  const response = await fetchWithTimeout(endpoint, {
-    method: metadata?.id ? "PATCH" : "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": `multipart/related; boundary=${boundary}`,
-    },
-    body: multipartBody,
-  });
-
-  if (!response.ok) {
-    logger.error("Google Drive upload failed", { status: response.status, username });
-    throw new Error(`google_drive_upload_failed_${response.status}`);
-  }
-
-  const result = await response.json();
-  const nextConnection = {
-    ...connection,
-    fileId: String(result.id || ""),
-    modifiedTime: String(result.modifiedTime || new Date().toISOString()),
-    updatedAt: new Date().toISOString(),
-  };
-  await saveUserConnection(username, nextConnection);
-
-  return {
-    action: metadata?.id ? "updated" : "created",
-    fileId: nextConnection.fileId,
-    modifiedTime: nextConnection.modifiedTime,
-    email: nextConnection.email || "",
-  };
-}
-
-async function restoreBackupForUser(username) {
-  const { accessToken, connection } = await getDriveAccessTokenForUser(username);
-  const metadata = await findDriveFile(accessToken);
-  if (!metadata?.id) throw new Error("google_drive_file_not_found");
-
-  const response = await fetchWithTimeout(
-    `https://www.googleapis.com/drive/v3/files/${metadata.id}?alt=media`,
-    { headers: { Authorization: `Bearer ${accessToken}` } }
-  );
-
-  if (!response.ok) {
-    logger.error("Google Drive download failed", { status: response.status, username });
-    throw new Error(`google_drive_download_failed_${response.status}`);
-  }
-
-  const payload = await response.json();
-  const nextConnection = {
-    ...connection,
-    fileId: String(metadata.id || ""),
-    modifiedTime: String(metadata.modifiedTime || ""),
-    updatedAt: new Date().toISOString(),
-  };
-  await saveUserConnection(username, nextConnection);
-
-  return {
-    payload,
-    fileId: nextConnection.fileId,
-    modifiedTime: nextConnection.modifiedTime,
-    email: nextConnection.email || "",
-  };
 }
 
 // ─── Route handlers ───────────────────────────────────────────────────────────
@@ -648,7 +290,8 @@ async function handleAuthRegister(req, res) {
     sendJson(res, 400, { error: "password_too_short" });
     return;
   }
-  if (getUserRecord(username)) {
+  const existing = getUserRecord(username);
+  if (existing?.passwordHash) {
     sendJson(res, 409, { error: "user_already_exists" });
     return;
   }
@@ -656,13 +299,13 @@ async function handleAuthRegister(req, res) {
   await saveUserRecord(username, {
     provider: "local",
     passwordHash: hashPassword(password),
-    createdAt: new Date().toISOString(),
+    createdAt: existing?.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   });
 
   const token = createSession(username);
   logger.info("Local user created", { username });
-  sendJson(res, 201, { sessionToken: token });
+  sendJson(res, 200, { sessionToken: token });
 }
 
 // POST /api/auth/migrate-local  { username, password }  → { ok }
@@ -695,64 +338,6 @@ async function handleAuthMigrateLocal(req, res) {
     return;
   }
   sendJson(res, 200, { ok: true, migrated: false });
-}
-
-// POST /api/auth/google-login  { credential }  → { sessionToken, username }
-async function handleGoogleAuthLogin(req, res) {
-  const body = await readJsonBody(req);
-  const credential = String(body?.credential || "").trim();
-  if (!credential) {
-    sendJson(res, 400, { error: "credential_required" });
-    return;
-  }
-
-  const payload = decodeJwtPayload(credential);
-  const username = String(payload?.email || "").trim();
-  const googleSub = String(payload?.sub || "").trim();
-  const audience = String(payload?.aud || "").trim();
-  const issuer = String(payload?.iss || "").trim();
-  const expiresAt = Number(payload?.exp || 0) * 1000;
-
-  if (!username || !googleSub || payload?.email_verified === false) {
-    sendJson(res, 401, { error: "invalid_google_credential" });
-    return;
-  }
-  if (!isValidGoogleIssuer(issuer)) {
-    sendJson(res, 401, { error: "invalid_google_issuer" });
-    return;
-  }
-  if (GOOGLE_CLIENT_ID && audience !== GOOGLE_CLIENT_ID) {
-    sendJson(res, 401, { error: "invalid_google_audience" });
-    return;
-  }
-  if (!expiresAt || Date.now() >= expiresAt) {
-    sendJson(res, 401, { error: "expired_google_credential" });
-    return;
-  }
-
-  const existing = getUserRecord(username);
-  if (existing && existing.provider !== "google") {
-    sendJson(res, 409, { error: "provider_mismatch" });
-    return;
-  }
-  if (existing?.googleSub && existing.googleSub !== googleSub) {
-    sendJson(res, 403, { error: "google_account_mismatch" });
-    return;
-  }
-
-  await saveUserRecord(username, {
-    provider: "google",
-    googleSub,
-    googleEmail: username,
-    googleName: String(payload?.name || existing?.googleName || username),
-    googlePicture: String(payload?.picture || existing?.googlePicture || ""),
-    createdAt: existing?.createdAt || new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  });
-
-  const token = createSession(username);
-  logger.info("Google user session created", { username });
-  sendJson(res, 200, { sessionToken: token, username });
 }
 
 // POST /api/auth/logout
@@ -800,152 +385,87 @@ async function handleAuthChangePassword(req, res, authenticatedUser) {
   sendJson(res, 200, { ok: true });
 }
 
-// GET /api/google-drive/status?username=
-async function handleGoogleDriveStatus(req, res, url) {
-  const username = String(url.searchParams.get("username") || "").trim();
-  const connection = username ? getUserConnection(username) : null;
-  sendJson(res, 200, {
-    available: true,
-    configured: isGoogleBackendConfigured(),
-    connected: Boolean(isGoogleBackendConfigured() && connection?.refreshToken),
-    email: connection?.email || "",
-    fileId: connection?.fileId || "",
-    modifiedTime: connection?.modifiedTime || "",
+function normalizeBusinessPayload(body) {
+  const payload = body?.state || body || {};
+  return {
+    platforms: Array.isArray(payload.platforms) ? payload.platforms : [],
+    db: payload.db && typeof payload.db === "object" ? payload.db : {},
+    currentMonth: String(payload.currentMonth || ""),
+    currentScreen: payload.currentScreen === "dashboard" || payload.currentScreen === "calculator" ? payload.currentScreen : "hub",
+    pricing: payload.pricing && typeof payload.pricing === "object" ? payload.pricing : null
+  };
+}
+
+async function handleGetState(req, res, authenticatedUser) {
+  sendJson(res, 200, { state: database.getBusinessState(authenticatedUser) });
+}
+
+async function handleSaveState(req, res, authenticatedUser) {
+  const body = await readJsonBody(req);
+  const saved = database.replaceBusinessState(authenticatedUser, normalizeBusinessPayload(body));
+  sendJson(res, 200, { ok: true, state: saved });
+}
+
+async function handleGetPlatforms(req, res, authenticatedUser) {
+  const state = database.getBusinessState(authenticatedUser);
+  sendJson(res, 200, { platforms: state.platforms });
+}
+
+async function handleSavePlatforms(req, res, authenticatedUser) {
+  const body = await readJsonBody(req);
+  const current = database.getBusinessState(authenticatedUser);
+  const saved = database.replaceBusinessState(authenticatedUser, {
+    ...current,
+    platforms: Array.isArray(body?.platforms) ? body.platforms : []
   });
+  sendJson(res, 200, { ok: true, platforms: saved.platforms });
 }
 
-// GET /api/google-drive/connect?username=  (requires session)
-async function handleGoogleDriveConnect(req, res, url, authenticatedUser) {
-  if (!isGoogleBackendConfigured()) {
-    sendJson(res, 503, { error: "google_drive_backend_not_configured" });
-    return;
-  }
-
-  const username = String(url.searchParams.get("username") || "").trim();
-  if (!username) {
-    sendJson(res, 400, { error: "username_required" });
-    return;
-  }
-
-  // Ensure the session user matches the requested username
-  if (authenticatedUser !== username) {
-    sendJson(res, 403, { error: "forbidden" });
-    return;
-  }
-
-  const state = crypto.randomBytes(24).toString("hex");
-  pendingOAuthStates.set(state, { username, createdAt: Date.now() });
-  const existingConnection = getUserConnection(username);
-
-  const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
-  authUrl.searchParams.set("client_id", GOOGLE_CLIENT_ID);
-  authUrl.searchParams.set("redirect_uri", GOOGLE_REDIRECT_URI);
-  authUrl.searchParams.set("response_type", "code");
-  authUrl.searchParams.set("scope", GOOGLE_DRIVE_SCOPE);
-  authUrl.searchParams.set("access_type", "offline");
-  if (!existingConnection?.refreshToken) {
-    authUrl.searchParams.set("prompt", "consent");
-  }
-  authUrl.searchParams.set("include_granted_scopes", "true");
-  authUrl.searchParams.set("state", state);
-
-  res.writeHead(302, { Location: authUrl.toString() });
-  res.end();
+async function handleGetSales(req, res, authenticatedUser) {
+  const state = database.getBusinessState(authenticatedUser);
+  sendJson(res, 200, { sales: state.db });
 }
 
-// GET /api/google-drive/oauth/callback
-async function handleGoogleDriveOauthCallback(req, res, url) {
-  const code = String(url.searchParams.get("code") || "").trim();
-  const state = String(url.searchParams.get("state") || "").trim();
-  const error = String(url.searchParams.get("error") || "").trim();
-
-  if (error) {
-    sendHtml(res, 400, buildPopupResponse({ success: false, error }));
-    return;
-  }
-
-  const pending = pendingOAuthStates.get(state);
-  pendingOAuthStates.delete(state);
-
-  if (!pending || Date.now() - pending.createdAt > 10 * 60_000) {
-    sendHtml(res, 400, buildPopupResponse({
-      success: false,
-      error: "Estado de autorizacao invalido ou expirado.",
-    }));
-    return;
-  }
-
-  try {
-    const tokenPayload = await exchangeAuthorizationCode(code);
-    const existing = getUserConnection(pending.username) || {};
-    const idTokenPayload = decodeJwtPayload(tokenPayload.id_token || "");
-    const refreshToken = String(tokenPayload.refresh_token || existing.refreshToken || "");
-
-    if (!refreshToken) throw new Error("google_refresh_token_missing");
-
-    await saveUserConnection(pending.username, {
-      ...existing,
-      refreshToken,
-      email: String(idTokenPayload?.email || existing.email || ""),
-      googleSub: String(idTokenPayload?.sub || existing.googleSub || ""),
-      updatedAt: new Date().toISOString(),
-      createdAt: existing.createdAt || new Date().toISOString(),
-      fileId: String(existing.fileId || ""),
-      modifiedTime: String(existing.modifiedTime || ""),
-    });
-
-    logger.info("Google Drive connected", { username: pending.username });
-
-    sendHtml(res, 200, buildPopupResponse({
-      success: true,
-      username: pending.username,
-    }));
-  } catch (err) {
-    logger.error("OAuth callback error", { error: err.message });
-    sendHtml(res, 500, buildPopupResponse({
-      success: false,
-      username: pending.username,
-      error: "Falha ao concluir a autorizacao.",
-    }));
-  }
-}
-
-// POST /api/google-drive/sync  (requires session)
-async function handleGoogleDriveSync(req, res, authenticatedUser) {
+async function handleSaveSales(req, res, authenticatedUser) {
   const body = await readJsonBody(req);
-  const username = String(body?.username || "").trim();
-
-  if (!username || !body?.payload) {
-    sendJson(res, 400, { error: "username_and_payload_required" });
-    return;
-  }
-  if (authenticatedUser !== username) {
-    sendJson(res, 403, { error: "forbidden" });
-    return;
-  }
-
-  const result = await uploadBackupForUser(username, body.payload);
-  logger.info("Sync completed", { username });
-  sendJson(res, 200, result);
+  const current = database.getBusinessState(authenticatedUser);
+  const saved = database.replaceBusinessState(authenticatedUser, {
+    ...current,
+    db: body?.db && typeof body.db === "object" ? body.db : current.db,
+    currentMonth: body?.currentMonth || current.currentMonth
+  });
+  sendJson(res, 200, { ok: true, sales: saved.db });
 }
 
-// POST /api/google-drive/restore  (requires session)
-async function handleGoogleDriveRestore(req, res, authenticatedUser) {
+async function handleGetReturns(req, res, authenticatedUser) {
+  const state = database.getBusinessState(authenticatedUser);
+  const returns = {};
+  Object.entries(state.db || {}).forEach(([month, monthData]) => {
+    returns[month] = monthData.returns || {};
+  });
+  sendJson(res, 200, { returns });
+}
+
+async function handleSaveReturns(req, res, authenticatedUser) {
   const body = await readJsonBody(req);
-  const username = String(body?.username || "").trim();
+  const current = database.getBusinessState(authenticatedUser);
+  const nextDb = { ...(current.db || {}) };
+  Object.entries(body?.returns || {}).forEach(([month, values]) => {
+    if (!nextDb[month]) nextDb[month] = { days: [], returns: {} };
+    nextDb[month].returns = values || {};
+  });
+  const saved = database.replaceBusinessState(authenticatedUser, { ...current, db: nextDb });
+  sendJson(res, 200, { ok: true, state: saved });
+}
 
-  if (!username) {
-    sendJson(res, 400, { error: "username_required" });
-    return;
-  }
-  if (authenticatedUser !== username) {
-    sendJson(res, 403, { error: "forbidden" });
-    return;
-  }
-
-  const result = await restoreBackupForUser(username);
-  logger.info("Restore completed", { username });
-  sendJson(res, 200, result);
+async function handleDashboard(req, res, authenticatedUser, month) {
+  const state = database.getBusinessState(authenticatedUser);
+  const selectedMonth = decodeURIComponent(month || "");
+  sendJson(res, 200, {
+    month: selectedMonth,
+    platforms: state.platforms,
+    data: state.db?.[selectedMonth] || { days: [], returns: {} }
+  });
 }
 
 // ─── Static file server ───────────────────────────────────────────────────────
@@ -961,26 +481,10 @@ function getContentType(filePath) {
   return types[ext] || "application/octet-stream";
 }
 
-function buildGoogleConfigScript() {
-  const config = {
-    clientId: GOOGLE_CLIENT_ID,
-    backendBaseUrl: "",
-  };
-  return `window.DASHBOARD_GOOGLE_CONFIG = Object.assign({}, window.DASHBOARD_GOOGLE_CONFIG || {}, ${JSON.stringify(config, null, 2)});\n`;
-}
-
 function serveStatic(req, res, url) {
   const mapped = STATIC_FILES.get(url.pathname);
   if (!mapped) {
     sendText(res, 404, "Not found");
-    return;
-  }
-  if (url.pathname === "/google-config.js") {
-    res.writeHead(200, {
-      "Content-Type": "application/javascript; charset=utf-8",
-      "Cache-Control": "no-store",
-    });
-    res.end(buildGoogleConfigScript());
     return;
   }
   const filePath = path.join(__dirname, mapped);
@@ -998,9 +502,6 @@ function serveStatic(req, res, url) {
 // ─── Periodic cleanup (replace per-request cleanup) ──────────────────────────
 setInterval(() => {
   const now = Date.now();
-  for (const [key, value] of pendingOAuthStates) {
-    if (now - value.createdAt > 10 * 60_000) pendingOAuthStates.delete(key);
-  }
   // Clean rate limit map entries from old windows
   for (const [ip, entry] of rateLimitMap) {
     if (now - entry.windowStart > RATE_LIMIT_WINDOW_MS * 2) rateLimitMap.delete(ip);
@@ -1014,9 +515,8 @@ const server = http.createServer(async (req, res) => {
   const ip = getClientIp(req);
   const url = new URL(req.url, APP_ORIGIN);
 
-  setCorsHeaders(res);
+  setCorsHeaders(res, req);
 
-  // Handle preflight
   if (req.method === "OPTIONS") {
     res.writeHead(204);
     res.end();
@@ -1025,7 +525,6 @@ const server = http.createServer(async (req, res) => {
 
   logger.info("Request", { method: req.method, path: url.pathname, ip });
 
-  // Rate limit API routes
   if (url.pathname.startsWith("/api/")) {
     if (!checkRateLimit(ip)) {
       logger.warn("Rate limit hit", { ip, path: url.pathname });
@@ -1035,7 +534,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
-    // ── Auth routes (no session required) ──────────────────────────────────
+    // Auth routes (no session required)
     if (req.method === "POST" && url.pathname === "/api/auth/register") {
       await handleAuthRegister(req, res);
       return;
@@ -1048,28 +547,28 @@ const server = http.createServer(async (req, res) => {
       await handleAuthMigrateLocal(req, res);
       return;
     }
-    if (req.method === "POST" && url.pathname === "/api/auth/google-login") {
-      await handleGoogleAuthLogin(req, res);
+    
+    // Session check
+    if (req.method === "GET" && url.pathname === "/api/auth/session") {
+      const sessionToken = extractSessionToken(req, url);
+      const authenticatedUser = validateSession(sessionToken);
+      if (!authenticatedUser) {
+        sendJson(res, 401, { error: "unauthorized" });
+        return;
+      }
+      sendJson(res, 200, { username: authenticatedUser });
       return;
     }
+    
+    // Logout (accepts any session state)
     if (req.method === "POST" && url.pathname === "/api/auth/logout") {
-      await handleAuthLogout(req, res);
+      const sessionToken = extractSessionToken(req, url);
+      if (sessionToken) deleteSession(sessionToken);
+      sendJson(res, 200, { ok: true });
       return;
     }
-
-    // ── Google Drive status (public, just reports connectivity) ────────────
-    if (req.method === "GET" && url.pathname === "/api/google-drive/status") {
-      await handleGoogleDriveStatus(req, res, url);
-      return;
-    }
-
-    // ── OAuth callback (public, validated by state param) ──────────────────
-    if (req.method === "GET" && url.pathname === "/api/google-drive/oauth/callback") {
-      await handleGoogleDriveOauthCallback(req, res, url);
-      return;
-    }
-
-    // ── Protected routes: validate session ─────────────────────────────────
+    
+    // Protected routes
     const sessionToken = extractSessionToken(req, url);
     const authenticatedUser = validateSession(sessionToken);
 
@@ -1079,23 +578,49 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === "GET" && url.pathname === "/api/google-drive/connect") {
+    if (url.pathname.startsWith("/api/")) {
       if (!authenticatedUser) { sendJson(res, 401, { error: "unauthorized" }); return; }
-      await handleGoogleDriveConnect(req, res, url, authenticatedUser);
-      return;
-    }
-    if (req.method === "POST" && url.pathname === "/api/google-drive/sync") {
-      if (!authenticatedUser) { sendJson(res, 401, { error: "unauthorized" }); return; }
-      await handleGoogleDriveSync(req, res, authenticatedUser);
-      return;
-    }
-    if (req.method === "POST" && url.pathname === "/api/google-drive/restore") {
-      if (!authenticatedUser) { sendJson(res, 401, { error: "unauthorized" }); return; }
-      await handleGoogleDriveRestore(req, res, authenticatedUser);
-      return;
+
+      if (req.method === "GET" && url.pathname === "/api/state") {
+        await handleGetState(req, res, authenticatedUser);
+        return;
+      }
+      if (req.method === "POST" && url.pathname === "/api/state") {
+        await handleSaveState(req, res, authenticatedUser);
+        return;
+      }
+      if (req.method === "GET" && url.pathname === "/api/platforms") {
+        await handleGetPlatforms(req, res, authenticatedUser);
+        return;
+      }
+      if (req.method === "POST" && url.pathname === "/api/platforms") {
+        await handleSavePlatforms(req, res, authenticatedUser);
+        return;
+      }
+      if (req.method === "GET" && url.pathname === "/api/sales") {
+        await handleGetSales(req, res, authenticatedUser);
+        return;
+      }
+      if (req.method === "POST" && url.pathname === "/api/sales") {
+        await handleSaveSales(req, res, authenticatedUser);
+        return;
+      }
+      if (req.method === "GET" && url.pathname === "/api/returns") {
+        await handleGetReturns(req, res, authenticatedUser);
+        return;
+      }
+      if (req.method === "POST" && url.pathname === "/api/returns") {
+        await handleSaveReturns(req, res, authenticatedUser);
+        return;
+      }
+      const dashboardMatch = url.pathname.match(/^\/api\/dashboard\/(.+)$/);
+      if (req.method === "GET" && dashboardMatch) {
+        await handleDashboard(req, res, authenticatedUser, dashboardMatch[1]);
+        return;
+      }
     }
 
-    // ── Static files ───────────────────────────────────────────────────────
+    // Static files
     if (req.method === "GET") {
       serveStatic(req, res, url);
       return;
@@ -1116,14 +641,51 @@ const server = http.createServer(async (req, res) => {
       message.includes("forbidden")           ? 403 :
       500;
 
-    // Never leak internal error details to the client
     const safeMessage = statusCode === 500 ? "internal_server_error" : message;
     sendJson(res, statusCode, { error: safeMessage });
   }
 });
 
-server.listen(PORT, () => {
-  logger.info("Server started", { origin: APP_ORIGIN });
-  logger.info("OAuth callback", { uri: GOOGLE_REDIRECT_URI });
-  logger.info("Google backend configured", { configured: isGoogleBackendConfigured() });
-});
+function startServer({ port = PORT, host = HOST } = {}) {
+  return new Promise((resolve, reject) => {
+    const onError = (error) => {
+      server.off("listening", onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      server.off("error", onError);
+      const address = server.address();
+      const actualPort = typeof address === "object" && address ? address.port : port;
+      const actualHost = host === "0.0.0.0" ? "127.0.0.1" : host;
+      const url = `http://${actualHost}:${actualPort}`;
+      logger.info("Server started", { origin: url });
+      resolve({ server, port: actualPort, host: actualHost, url });
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(port, host);
+  });
+}
+
+function stopServer() {
+  return new Promise((resolve, reject) => {
+    if (!server.listening) {
+      resolve();
+      return;
+    }
+    server.close((error) => error ? reject(error) : resolve());
+  });
+}
+
+if (require.main === module) {
+  startServer().catch((error) => {
+    logger.error("Failed to start server", { message: error.message });
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  server,
+  startServer,
+  stopServer
+};

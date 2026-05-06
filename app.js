@@ -1,15 +1,10 @@
 const STORAGE_KEY = "dashboard-vendas-state-v2";
 const STORAGE_BACKUP_KEY = "dashboard-vendas-state-v2-backup";
+const AUTH_STORAGE_KEY = "dashboard-vendas-auth-v2";
 const LAST_SAVED_KEY = "dashboard-vendas-last-saved-v1";
 const SESSION_KEY = "dashboard-vendas-session-v1";
 const THEME_KEY = "dashboard-vendas-theme-v1";
-const GOOGLE_TOKEN_STORAGE_KEY = "dashboard-vendas-google-token-v1";
-const SESSION_DURATION_MS = 60 * 1000;
-const GOOGLE_TOKEN_EXPIRY_SKEW_MS = 60 * 1000;
-const GOOGLE_DRIVE_FILE_NAME = "dashboard-vendas-state.json";
-const GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.appdata";
-const GOOGLE_CONFIG = window.DASHBOARD_GOOGLE_CONFIG || {};
-const GOOGLE_BACKEND_API_BASE = String(GOOGLE_CONFIG.backendBaseUrl || "").replace(/\/$/, "");
+const SESSION_DURATION_MS = 365 * 24 * 60 * 60 * 1000; // 1 ano
 
 const ALL_MONTHS = [
   "Janeiro", "Fevereiro", "Marco", "Abril", "Maio", "Junho",
@@ -54,29 +49,6 @@ const LEGACY_PLATFORM_KEY_ALIASES = {
   tk: "tiktok",
   "tiktok-shop": "tiktok",
   kw: "kwai"
-};
-
-const PLATFORM_FAVICON_DOMAINS = {
-  "mercado-livre": "mercadolivre.com.br",
-  mercadolivre: "mercadolivre.com.br",
-  shopee: "shopee.com.br",
-  shein: "br.shein.com",
-  magalu: "magazineluiza.com.br",
-  "magazine-luiza": "magazineluiza.com.br",
-  "nuvem-shop": "nuvemshop.com.br",
-  nuvemshop: "nuvemshop.com.br",
-  tiktok: "tiktok.com",
-  "tiktok-shop": "shop.tiktok.com",
-  kwai: "kwai.com",
-  amazon: "amazon.com.br",
-  "amazon-brasil": "amazon.com.br",
-  americanas: "americanas.com.br",
-  "loja-integrada": "lojaintegrada.com.br",
-  tray: "tray.com.br",
-  yampi: "yampi.com.br",
-  aliexpress: "aliexpress.com",
-  "ali-express": "aliexpress.com",
-  "mercado-shops": "mercadoshops.com.br"
 };
 
 const BRAND_COLORS = ["#2563eb", "#ff5722", "#14b8a6", "#fb923c", "#e11d48", "#7c3aed", "#0ea5e9", "#16a34a"];
@@ -165,24 +137,10 @@ let editingPlatformKey = null;
 let pendingImportMode = "merge";
 let pendingDeleteMonth = null;
 let headerMenuCloseTimer = null;
-let googleTokenClient = null;
-let googleAccessToken = "";
-let googleDriveSyncTimer = null;
-let googleSyncInFlight = false;
-let googleDriveBootstrapStarted = false;
-let googleSignInReady = false;
-let googleSignInRenderTimer = null;
-let googleDriveBackendStatus = {
-  checked: false,
-  available: false,
-  configured: false,
-  connected: false,
-  email: "",
-  fileId: "",
-  modifiedTime: "",
-  busy: false
-};
 let activeAppScreen = "hub";
+let serverSaveTimer = null;
+let serverSaveInFlight = false;
+let serverSaveQueued = false;
 
 const state = loadState();
 let currentTheme = loadTheme();
@@ -200,6 +158,54 @@ const RS = (v) => {
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+// ─── UI Utilities ─────────────────────────────────────────────────────────────
+
+let _toastTimer = null;
+
+function toast(message) {
+  // Reuse existing element or create one on the fly
+  let el = document.getElementById("appToast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "appToast";
+    el.setAttribute("role", "status");
+    el.setAttribute("aria-live", "polite");
+    Object.assign(el.style, {
+      position: "fixed",
+      bottom: "24px",
+      left: "50%",
+      transform: "translateX(-50%)",
+      background: "var(--toast-bg, #1f2937)",
+      color: "var(--toast-color, #f9fafb)",
+      padding: "10px 20px",
+      borderRadius: "8px",
+      fontSize: "14px",
+      fontFamily: "inherit",
+      boxShadow: "0 4px 16px rgba(0,0,0,0.35)",
+      zIndex: "9999",
+      opacity: "0",
+      transition: "opacity 0.2s ease",
+      pointerEvents: "none",
+      whiteSpace: "nowrap",
+      maxWidth: "90vw",
+      overflow: "hidden",
+      textOverflow: "ellipsis"
+    });
+    document.body.appendChild(el);
+  }
+  el.textContent = message;
+  el.style.opacity = "1";
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => {
+    el.style.opacity = "0";
+  }, 3000);
+}
+
+function setStorageStatus(message) {
+  const el = document.getElementById("storageStatus");
+  if (el) el.textContent = String(message || "");
 }
 
 function escapeHtml(value) {
@@ -260,62 +266,28 @@ function getPlatformVisualColor(platform, alpha = null) {
 }
 
 function normalizeAuth(auth) {
-  const provider = auth?.provider === "google" ? "google" : "local";
-  const username = provider === "google"
-    ? String(auth?.googleEmail || auth?.username || "").trim()
-    : String(auth?.username || "").trim();
+  const username = String(auth?.username || "").trim();
   if (!username) return null;
+  
+  // Aceitar tanto "local" quanto "google" (para migração)
+  const provider = auth?.provider === "google" ? "local" : (auth?.provider || "local");
+  
   return {
     provider,
     username,
-    password: provider === "local" ? String(auth.password || "") : "",
-    googleEmail: String(auth?.googleEmail || (provider === "google" ? username : "")),
-    googleName: String(auth?.googleName || ""),
-    googlePicture: String(auth?.googlePicture || ""),
-    googleSub: String(auth?.googleSub || ""),
-    googleDriveFileId: String(auth.googleDriveFileId || ""),
-    googleDriveModifiedTime: String(auth.googleDriveModifiedTime || ""),
-    googleDriveLastAction: String(auth.googleDriveLastAction || ""),
-    googleDriveAuthorized: Boolean(auth?.googleDriveAuthorized)
+    password: String(auth.password || "")
   };
-}
-
-function isGoogleConfigured() {
-  const clientId = String(GOOGLE_CONFIG.clientId || "").trim();
-  return Boolean(clientId && !clientId.includes("SEU_CLIENT_ID"));
-}
-
-function isGoogleOriginSupported() {
-  const protocol = window.location.protocol;
-  const hostname = window.location.hostname;
-  if (protocol === "https:") return true;
-  if (protocol === "http:" && /^(localhost|127(?:\.\d{1,3}){3})$/i.test(hostname)) return true;
-  return false;
 }
 
 function isLocalAuth() {
   return (state.auth?.provider || "local") === "local";
 }
 
-function isGoogleAuth() {
-  return (state.auth?.provider || "local") === "google";
-}
-
 function isSessionActive() {
   if (!sessionUser || !state.auth?.username) return false;
   return sessionUser.username === state.auth.username
-    && (sessionUser.provider || "local") === (state.auth?.provider || "local")
+    && (sessionUser.provider || "local") === "local"
     && Boolean(sessionUser.serverSessionToken);
-}
-
-function canUseGoogleDrive() {
-  return Boolean(state.auth?.username) && isSessionActive();
-}
-
-function hasGoogleDriveAccess() {
-  if (!canUseGoogleDrive()) return false;
-  if (googleDriveBackendStatus.available) return googleDriveBackendStatus.connected;
-  return Boolean(getActiveGoogleAccessToken());
 }
 
 function getDefaultMonth() {
@@ -405,7 +377,7 @@ function getPlatformKeyCandidates(platformOrKey) {
   return [...candidates].filter(Boolean);
 }
 
-function normalizeMonthName(month) {
+/*function normalizeMonthName(month) {
   const normalized = String(month || "")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
@@ -413,7 +385,7 @@ function normalizeMonthName(month) {
     .replace(/Ã/g, "a");
   const matched = ALL_MONTHS.find((item) => item.toLowerCase() === normalized.toLowerCase());
   return matched || normalized || getDefaultMonth();
-}
+}*/
 
 function normalizeMonthName(month) {
   const raw = String(month || "").trim();
@@ -667,36 +639,239 @@ function normalizeState(raw) {
 
 function loadState() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(STORAGE_BACKUP_KEY);
+    const authRaw = localStorage.getItem(AUTH_STORAGE_KEY);
+    if (authRaw) {
+      const parsed = JSON.parse(authRaw);
+      const next = defaultState();
+      next.auth = normalizeAuth(parsed.auth);
+      next.currentScreen = parsed.currentScreen === "dashboard" || parsed.currentScreen === "calculator" ? parsed.currentScreen : "hub";
+      return next;
+    }
+    const raw = localStorage.getItem(AUTH_STORAGE_KEY) || localStorage.getItem(STORAGE_KEY) || localStorage.getItem(STORAGE_BACKUP_KEY);
     if (!raw) return defaultState();
-    return normalizeState(JSON.parse(raw));
+    const legacy = normalizeState(JSON.parse(raw));
+    return { ...defaultState(), auth: legacy.auth, currentScreen: legacy.currentScreen || "hub" };
   } catch (error) {
     try {
-      const backupRaw = localStorage.getItem(STORAGE_BACKUP_KEY);
+      const backupRaw = localStorage.getItem(AUTH_STORAGE_KEY);
       if (backupRaw) return normalizeState(JSON.parse(backupRaw));
     } catch (backupError) {
       console.error("Falha ao carregar backup local:", backupError);
     }
-    console.error("Falha ao carregar estado local:", error);
+    console.error("Falha ao carregar credenciais locais:", error);
     return defaultState();
   }
 }
 
 function saveState(options = {}) {
-  const snapshot = JSON.stringify(normalizeState(clone(state)));
-  localStorage.setItem(STORAGE_KEY, snapshot);
-  localStorage.setItem(STORAGE_BACKUP_KEY, snapshot);
+  localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({
+    auth: state.auth,
+    currentScreen: state.currentScreen || activeAppScreen
+  }));
   const savedAt = new Date().toISOString();
   localStorage.setItem(LAST_SAVED_KEY, savedAt);
   if (state.auth?.username) {
     const baseMessage = getPlatforms().length
-      ? `Dados locais de ${state.auth.username}`
-      : `Dados locais de ${state.auth.username} · cadastre plataformas em "Plataformas"`;
+      ? `Dados no servidor de ${state.auth.username}`
+      : `Dados no servidor de ${state.auth.username} · cadastre plataformas em "Plataformas"`;
     const stamp = formatSavedAt(savedAt);
     setStorageStatus(stamp ? `${baseMessage} · salvo em ${stamp}` : baseMessage);
   }
-  if (!options.skipGoogleSync) scheduleGoogleDriveSync();
-  renderGoogleUi();
+  if (!options.localOnly && isSessionActive()) scheduleServerSave();
+}
+
+function getBusinessSnapshot() {
+  const normalized = normalizeState(clone(state));
+  return {
+    platforms: normalized.platforms,
+    db: normalized.db,
+    currentMonth: normalized.currentMonth,
+    currentScreen: normalized.currentScreen,
+    pricing: normalized.pricing
+  };
+}
+
+function loadLegacyBusinessState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(STORAGE_BACKUP_KEY);
+    if (!raw) return null;
+    const legacy = normalizeState(JSON.parse(raw));
+    return legacy.platforms.length || Object.keys(legacy.db || {}).length ? legacy : null;
+  } catch (error) {
+    console.error("Falha ao ler dados locais legados:", error);
+    return null;
+  }
+}
+
+async function migrateFromGoogleBackup(backupData) {
+  console.log("Migrando backup do Google para formato local...");
+  
+  // Extrair dados essenciais
+  const state = backupData.state || {};
+  
+  // Configurar auth como local
+  if (state.auth?.username) {
+    state.auth.provider = "local";
+    
+    // Remover campos do Google
+    delete state.auth.googleEmail;
+    delete state.auth.googleName;
+    delete state.auth.googlePicture;
+    delete state.auth.googleSub;
+    delete state.auth.googleDriveFileId;
+    delete state.auth.googleDriveModifiedTime;
+    delete state.auth.googleDriveLastAction;
+    delete state.auth.googleDriveAuthorized;
+  }
+  
+  // Registrar usuário no servidor se necessário
+  if (state.auth?.username && state.auth?.password) {
+    try {
+      await readBackendJson("/api/auth/migrate-local", {
+        method: "POST",
+        requiresAuth: false,
+        body: JSON.stringify({
+          username: state.auth.username,
+          password: state.auth.password || "migrate123" // Senha temporária
+        })
+      });
+    } catch (error) {
+      console.warn("Não foi possível migrar usuário:", error);
+    }
+  }
+  
+  return backupData;
+}
+
+function applyBusinessState(serverState = {}) {
+  const normalized = normalizeState({
+    ...serverState,
+    auth: state.auth,
+    currentMonth: serverState.currentMonth || state.currentMonth || getDefaultMonth(),
+    currentScreen: serverState.currentScreen || state.currentScreen || "hub",
+    pricing: serverState.pricing || state.pricing
+  });
+  state.platforms = normalized.platforms;
+  state.db = normalized.db;
+  state.currentMonth = normalized.currentMonth;
+  state.pricing = normalized.pricing;
+  state.currentScreen = normalized.currentScreen;
+  activeAppScreen = state.currentScreen || "hub";
+  ensureStateMonths(state);
+}
+
+// Substitua a função loadBusinessStateFromServer (linhas ~850)
+async function loadBusinessStateFromServer({ migrateLocal = false } = {}) {
+  if (!isSessionActive()) return false;
+  
+  try {
+    const result = await readBackendJson("/api/state");
+    const remote = result?.state || {};
+    const remoteHasBusiness = Array.isArray(remote.platforms) && remote.platforms.length;
+    
+    if (!remoteHasBusiness && migrateLocal) {
+      const legacy = loadLegacyBusinessState();
+      if (legacy) {
+        state.platforms = legacy.platforms;
+        state.db = legacy.db;
+        state.currentMonth = legacy.currentMonth;
+        state.pricing = legacy.pricing;
+        state.currentScreen = legacy.currentScreen || state.currentScreen || "hub";
+        saveState();
+        return true;
+      }
+    }
+    
+    applyBusinessState(remote);
+    saveState({ localOnly: true });
+    return true;
+  } catch (error) {
+    console.error("Falha ao carregar dados do servidor:", error);
+    
+    // Se der 401, tenta usar dados locais
+    if (error?.message?.includes('401') || error?.message?.includes('unauthorized')) {
+      console.log("Sessão inválida, tentando dados locais...");
+      const legacy = loadLegacyBusinessState();
+      if (legacy) {
+        applyBusinessState(legacy);
+        return true;
+      }
+      clearSession();
+      renderScreen();
+      return false;
+    }
+    
+    toast("Não foi possível carregar os dados do servidor");
+    return false;
+  }
+}
+
+// Adicionar após a função loadBusinessStateFromServer
+function debugState() {
+  console.log("=== DEBUG STATE ===");
+  console.log("Auth:", state.auth);
+  console.log("Platforms:", state.platforms);
+  console.log("Current Month:", state.currentMonth);
+  console.log("DB Keys:", Object.keys(state.db || {}));
+  console.log("Current Screen:", state.currentScreen);
+  console.log("Session:", sessionUser);
+  console.log("isSessionActive:", isSessionActive());
+  console.log("isSetupComplete:", isSetupComplete());
+  console.log("==================");
+}
+
+// Adicionar após a função readBackendJson (linha ~702)
+async function validateServerSession() {
+  if (!isSessionActive()) return false;
+  try {
+    await readBackendJson("/api/auth/session", {
+      requiresAuth: false,
+      headers: {
+        Authorization: `Bearer ${getServerSessionToken()}`
+      }
+    });
+    return true;
+  } catch (error) {
+    console.warn("Sessão inválida ou expirada:", error);
+    return false;
+  }
+}
+
+function scheduleServerSave() {
+  clearTimeout(serverSaveTimer);
+  serverSaveTimer = setTimeout(() => {
+    void persistBusinessStateToServer();
+  }, 150);
+}
+
+async function persistBusinessStateToServer() {
+  if (!isSessionActive()) return;
+  if (serverSaveInFlight) {
+    serverSaveQueued = true;
+    return;
+  }
+  serverSaveInFlight = true;
+  try {
+    await readBackendJson("/api/state", {
+      method: "POST",
+      body: JSON.stringify({ state: getBusinessSnapshot() })
+    });
+    if (state.auth?.username) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({ auth: state.auth }));
+} else {
+  localStorage.removeItem(STORAGE_KEY);
+}
+localStorage.removeItem(STORAGE_BACKUP_KEY);
+  } catch (error) {
+    console.error("Falha ao salvar no servidor:", error);
+    toast("Nao foi possivel salvar no servidor");
+  } finally {
+    serverSaveInFlight = false;
+    if (serverSaveQueued) {
+      serverSaveQueued = false;
+      void persistBusinessStateToServer();
+    }
+  }
 }
 
 function loadTheme() {
@@ -759,7 +934,7 @@ function loadSession() {
 
     return {
       username: String(parsed.username),
-      provider: parsed.provider === "google" ? "google" : "local",
+      provider: "local",
       serverSessionToken
     };
   } catch (error) {
@@ -770,11 +945,48 @@ function loadSession() {
   }
 }
 
+// Adicione após a função loadSession()
+function refreshSessionIfNeeded() {
+  if (!isSessionActive()) return;
+  
+  const raw = localStorage.getItem(SESSION_KEY);
+  if (!raw) return;
+  
+  try {
+    const parsed = JSON.parse(raw);
+    const now = Date.now();
+    const expiresAt = Number(parsed.expiresAt);
+    
+    // Se faltar menos de 30 dias para expirar, renova
+    if (expiresAt - now < 30 * 24 * 60 * 60 * 1000) {
+      const newExpiresAt = now + SESSION_DURATION_MS;
+      parsed.expiresAt = newExpiresAt;
+      localStorage.setItem(SESSION_KEY, JSON.stringify(parsed));
+      console.log("Sessão renovada até:", new Date(newExpiresAt).toLocaleDateString());
+    }
+  } catch (error) {
+    console.warn("Falha ao renovar sessão:", error);
+  }
+}
+
 function saveSession(username, provider = "local", serverSessionToken = sessionUser?.serverSessionToken || "") {
   const safeToken = String(serverSessionToken || "").trim();
   sessionUser = {
     username,
-    provider: provider === "google" ? "google" : "local",
+    provider: "local",
+    serverSessionToken: safeToken
+  };
+  localStorage.setItem(SESSION_KEY, JSON.stringify({
+    username,
+    provider: sessionUser.provider,
+    serverSessionToken: safeToken,
+    expiresAt: Date.now() + SESSION_DURATION_MS
+  }));
+}function saveSession(username, provider = "local", serverSessionToken = sessionUser?.serverSessionToken || "") {
+  const safeToken = String(serverSessionToken || "").trim();
+  sessionUser = {
+    username,
+    provider: "local",
     serverSessionToken: safeToken
   };
   localStorage.setItem(SESSION_KEY, JSON.stringify({
@@ -799,7 +1011,7 @@ async function readBackendJson(path, options = {}) {
   const extraHeaders = options.requiresAuth === false || !serverSessionToken
     ? {}
     : { Authorization: `Bearer ${serverSessionToken}` };
-  const response = await fetch(getGoogleDriveApiUrl(path), {
+  const response = await fetch(path, {
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -836,7 +1048,7 @@ async function migrateLegacyLocalAuthIfNeeded() {
       ...state.auth,
       password: ""
     });
-    saveState({ skipGoogleSync: true });
+    saveState();
     return true;
   } catch (error) {
     console.error("Falha ao migrar acesso local legado:", error);
@@ -844,1003 +1056,11 @@ async function migrateLegacyLocalAuthIfNeeded() {
   }
 }
 
-function loadCachedGoogleToken() {
-  try {
-    const raw = sessionStorage.getItem(GOOGLE_TOKEN_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    const accessToken = String(parsed?.accessToken || "");
-    const expiresAt = Number(parsed?.expiresAt || 0);
-    if (!accessToken || !expiresAt || (Date.now() + GOOGLE_TOKEN_EXPIRY_SKEW_MS) >= expiresAt) {
-      sessionStorage.removeItem(GOOGLE_TOKEN_STORAGE_KEY);
-      return null;
-    }
-    return { accessToken, expiresAt };
-  } catch (error) {
-    sessionStorage.removeItem(GOOGLE_TOKEN_STORAGE_KEY);
-    return null;
-  }
-}
-
-function persistGoogleToken(accessToken, expiresInSeconds = 0) {
-  const safeToken = String(accessToken || "").trim();
-  const safeExpiresIn = Number(expiresInSeconds || 0);
-  if (!safeToken || !safeExpiresIn) return;
-  sessionStorage.setItem(GOOGLE_TOKEN_STORAGE_KEY, JSON.stringify({
-    accessToken: safeToken,
-    expiresAt: Date.now() + (safeExpiresIn * 1000)
-  }));
-}
-
-function clearCachedGoogleToken() {
-  googleAccessToken = "";
-  sessionStorage.removeItem(GOOGLE_TOKEN_STORAGE_KEY);
-}
-
-function getActiveGoogleAccessToken() {
-  if (googleAccessToken) return googleAccessToken;
-  const cached = loadCachedGoogleToken();
-  if (!cached?.accessToken) return "";
-  googleAccessToken = cached.accessToken;
-  return googleAccessToken;
-}
-
-function getCurrentYear() {
-  return new Date().getFullYear();
-}
-
-function getMonthIndexByName(month) {
-  return ALL_MONTHS.findIndex((item) => item === month);
-}
-
-function toInputDateValue(year, monthIndex, day) {
-  const date = new Date(year, monthIndex, day);
-  const safeYear = date.getFullYear();
-  const safeMonth = String(date.getMonth() + 1).padStart(2, "0");
-  const safeDay = String(date.getDate()).padStart(2, "0");
-  return `${safeYear}-${safeMonth}-${safeDay}`;
-}
-
-function getLocalDateInputValue() {
-  const now = new Date();
-  const offset = now.getTimezoneOffset() * 60000;
-  return new Date(now.getTime() - offset).toISOString().split("T")[0];
-}
-
-function getSuggestedInputDate(month) {
-  const monthIndex = getMonthIndexByName(month);
-  if (monthIndex < 0) return getLocalDateInputValue();
-  const now = new Date();
-  const sameMonth = now.getFullYear() === getCurrentYear() && now.getMonth() === monthIndex;
-  return sameMonth ? getLocalDateInputValue() : toInputDateValue(getCurrentYear(), monthIndex, 1);
-}
-
-function syncSaleDateWithMonth(force = false) {
-  const monthSelect = document.getElementById("inputMonth");
-  const dateInput = document.getElementById("inputDate");
-  if (!monthSelect || !dateInput) return;
-
-  const selectedMonth = monthSelect.value || state.currentMonth;
-  const monthIndex = getMonthIndexByName(selectedMonth);
-  if (monthIndex < 0) {
-    if (force || !dateInput.value) dateInput.value = getLocalDateInputValue();
-    return;
-  }
-
-  const desiredValue = getSuggestedInputDate(selectedMonth);
-  if (!dateInput.value) {
-    dateInput.value = desiredValue;
-    return;
-  }
-
-  const currentDate = new Date(`${dateInput.value}T00:00:00`);
-  const currentMonthMatches = !Number.isNaN(currentDate.getTime()) && currentDate.getMonth() === monthIndex;
-  if (force || !currentMonthMatches) dateInput.value = desiredValue;
-}
-
-function toast(message) {
-  const el = document.getElementById("toast");
-  el.textContent = message;
-  el.classList.add("show");
-  setTimeout(() => el.classList.remove("show"), 2500);
-}
-
-function setStorageStatus(message) {
-  const el = document.getElementById("authStatus");
-  if (el) el.textContent = message;
-}
-
-function renderCurrentUserBadge() {
-  const badge = document.getElementById("currentUserBadge");
-  if (!badge) return;
-  const providerLabel = isGoogleAuth() ? "Google" : "Local";
-  badge.textContent = `Usuario: ${state.auth?.username || "-"} (${providerLabel})`;
-}
-
-function setGoogleDriveStatus(message) {
-  const el = document.getElementById("googleDriveStatus");
-  if (el) el.textContent = message;
-}
-
-function getGoogleDriveActionLabel(action) {
-  if (action === "created") return "arquivo criado";
-  if (action === "created_on_login") return "arquivo criado no login";
-  if (action === "updated") return "arquivo atualizado";
-  if (action === "restored") return "backup restaurado";
-  if (action === "restored_on_login") return "backup restaurado no login";
-  return "conectado";
-}
-
-function driveDebug(step, details = null) {
-  if (details === null || details === undefined) {
-    console.log(`[DriveSync] ${step}`);
-    return;
-  }
-  console.log(`[DriveSync] ${step}`, details);
-}
-
-function getGoogleDriveApiUrl(path) {
-  return `${GOOGLE_BACKEND_API_BASE}${path}`;
-}
-
-function resetGoogleDriveBackendStatus() {
-  googleDriveBackendStatus = {
-    checked: true,
-    available: googleDriveBackendStatus.available,
-    configured: googleDriveBackendStatus.configured,
-    connected: false,
-    email: "",
-    fileId: "",
-    modifiedTime: "",
-    busy: false
-  };
-}
-
-function applyGoogleDriveBackendStatus(status = {}) {
-  googleDriveBackendStatus = {
-    checked: true,
-    available: Boolean(status?.available),
-    configured: Boolean(status?.configured),
-    connected: Boolean(status?.connected),
-    email: String(status?.email || ""),
-    fileId: String(status?.fileId || ""),
-    modifiedTime: String(status?.modifiedTime || ""),
-    busy: false
-  };
-
-  if (!state.auth) return;
-  if (googleDriveBackendStatus.connected) {
-    state.auth.googleDriveAuthorized = true;
-    if (googleDriveBackendStatus.fileId) state.auth.googleDriveFileId = googleDriveBackendStatus.fileId;
-    if (googleDriveBackendStatus.modifiedTime) state.auth.googleDriveModifiedTime = googleDriveBackendStatus.modifiedTime;
-  }
-}
-
-async function refreshGoogleDriveBackendStatus({ render = true } = {}) {
-  try {
-    const username = encodeURIComponent(state.auth?.username || "");
-    const response = await fetch(getGoogleDriveApiUrl(`/api/google-drive/status${username ? `?username=${username}` : ""}`), {
-      headers: { Accept: "application/json" }
-    });
-    if (!response.ok) throw new Error(`backend_status_${response.status}`);
-    const status = await response.json();
-    applyGoogleDriveBackendStatus(status);
-    driveDebug("backend:status", status);
-  } catch (error) {
-    googleDriveBackendStatus = {
-      checked: true,
-      available: false,
-      configured: false,
-      connected: false,
-      email: "",
-      fileId: "",
-      modifiedTime: "",
-      busy: false
-    };
-    driveDebug("backend:status unavailable", {
-      message: error?.message || String(error)
-    });
-  } finally {
-    if (render) renderGoogleUi();
-  }
-}
-
-async function readGoogleDriveBackendJson(path, options = {}) {
-  return readBackendJson(path, options);
-}
-
-function waitForGoogleDrivePopup(popup, expectedUsername) {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const popupMonitor = setInterval(() => {
-      if (!popup || popup.closed) {
-        cleanup();
-        reject(new Error("popup_closed"));
-      }
-    }, 400);
-
-    const timeout = setTimeout(() => {
-      cleanup();
-      reject(new Error("popup_timeout"));
-    }, 120000);
-
-    const onMessage = (event) => {
-      if (event.origin !== window.location.origin) return;
-      if (event.data?.type !== "google-drive-connected") return;
-      if (expectedUsername && event.data?.username !== expectedUsername) return;
-      cleanup();
-      if (event.data?.success) resolve(event.data);
-      else reject(new Error(event.data?.error || "google_drive_connect_failed"));
-    };
-
-    function cleanup() {
-      if (settled) return;
-      settled = true;
-      clearInterval(popupMonitor);
-      clearTimeout(timeout);
-      window.removeEventListener("message", onMessage);
-    }
-
-    window.addEventListener("message", onMessage);
-  });
-}
-
-async function ensureGoogleDriveBackendConnection({ interactive = true } = {}) {
-  if (!canUseGoogleDrive()) return false;
-  if (!googleDriveBackendStatus.checked) await refreshGoogleDriveBackendStatus({ render: false });
-  if (!googleDriveBackendStatus.available || !googleDriveBackendStatus.configured) return false;
-  if (googleDriveBackendStatus.connected) return true;
-  if (!interactive) return false;
-
-  const serverSessionToken = getServerSessionToken();
-  if (!serverSessionToken) throw new Error("session_missing");
-  const connectUrl = getGoogleDriveApiUrl(`/api/google-drive/connect?username=${encodeURIComponent(state.auth.username)}&sessionToken=${encodeURIComponent(serverSessionToken)}`);
-  const popup = window.open(connectUrl, "googleDriveConnect", "popup=yes,width=520,height=720");
-  if (!popup) throw new Error("popup_failed_to_open");
-  popup.focus();
-  await waitForGoogleDrivePopup(popup, state.auth.username);
-  await refreshGoogleDriveBackendStatus({ render: false });
-  return googleDriveBackendStatus.connected;
-}
-
-async function syncGoogleDriveViaBackend() {
-  const result = await readGoogleDriveBackendJson("/api/google-drive/sync", {
-    method: "POST",
-    body: JSON.stringify({
-      username: state.auth.username,
-      payload: getBackupPayload()
-    })
-  });
-
-  state.auth.googleDriveFileId = result.fileId || "";
-  state.auth.googleDriveModifiedTime = result.modifiedTime || new Date().toISOString();
-  state.auth.googleDriveLastAction = result.action || "updated";
-  state.auth.googleDriveAuthorized = true;
-  applyGoogleDriveBackendStatus({
-    available: true,
-    configured: true,
-    connected: true,
-    email: result.email || googleDriveBackendStatus.email,
-    fileId: state.auth.googleDriveFileId,
-    modifiedTime: state.auth.googleDriveModifiedTime
-  });
-  return result;
-}
-
-async function restoreGoogleDriveViaBackend(preferredMode) {
-  const result = await readGoogleDriveBackendJson("/api/google-drive/restore", {
-    method: "POST",
-    body: JSON.stringify({
-      username: state.auth.username
-    })
-  });
-
-  applyImportedBackup(result.payload, preferredMode);
-  state.auth.googleDriveFileId = result.fileId || "";
-  state.auth.googleDriveModifiedTime = result.modifiedTime || "";
-  state.auth.googleDriveLastAction = "restored";
-  state.auth.googleDriveAuthorized = true;
-  applyGoogleDriveBackendStatus({
-    available: true,
-    configured: true,
-    connected: true,
-    email: result.email || googleDriveBackendStatus.email,
-    fileId: state.auth.googleDriveFileId,
-    modifiedTime: state.auth.googleDriveModifiedTime
-  });
-  return result;
-}
-
-function renderGoogleUi() {
-  const googleHint = document.getElementById("googleAuthHint");
-  const syncButton = document.getElementById("syncGoogleDriveButton");
-  const restoreButton = document.getElementById("restoreGoogleDriveButton");
+function renderAuthUi() {
+  const authHint = document.getElementById("authHint");
   const changePasswordButton = document.getElementById("changePasswordButton");
-  const googleReady = isGoogleConfigured();
-  const googleOriginReady = isGoogleOriginSupported();
-  const backendDriveReady = googleDriveBackendStatus.available && googleDriveBackendStatus.configured;
-  const driveReady = backendDriveReady || (googleReady && googleOriginReady);
-  const driveAvailable = canUseGoogleDrive();
-
-  if (googleHint) {
-    if (backendDriveReady && driveAvailable && !googleDriveBackendStatus.connected) {
-      googleHint.textContent = "Use Sincronizar Google Drive para conectar sua conta uma vez. Depois a renovação fica no backend.";
-    } else if (backendDriveReady && driveAvailable) {
-      googleHint.textContent = "Backup do Google Drive conectado via backend. As proximas sincronizacoes podem rodar sem popup.";
-    } else if (googleDriveBackendStatus.available && !googleDriveBackendStatus.configured) {
-      googleHint.textContent = "Configure o arquivo .env do backend com GOOGLE_CLIENT_ID e GOOGLE_CLIENT_SECRET para liberar o Google Drive.";
-    } else if (!googleReady) {
-      googleHint.textContent = "Configure GOOGLE_CLIENT_ID no backend para liberar o login e o backup com Google.";
-    } else if (!googleOriginReady) {
-      googleHint.textContent = "Abra este dashboard em https ou em http://localhost para usar login com Google. O protocolo file:// nao e aceito pelo Google.";
-    } else if (driveAvailable) {
-      googleHint.textContent = "Use os botoes de sincronizar ou restaurar para conectar o backup com o Google Drive.";
-    } else if (isGoogleAuth()) {
-      googleHint.textContent = "Entre com a mesma conta Google usada para criar este acesso.";
-    } else if (!state.auth?.username) {
-      googleHint.textContent = "Voce pode criar o acesso localmente ou entrar com Google.";
-    } else {
-      googleHint.textContent = "Faca login para liberar o backup com Google Drive. O acesso atual continua local.";
-    }
-  }
-
-  if (syncButton) syncButton.disabled = !driveReady || !driveAvailable || googleSyncInFlight;
-  if (restoreButton) restoreButton.disabled = !driveReady || !driveAvailable || googleSyncInFlight;
+  if (authHint) authHint.textContent = "Ao entrar, seus dados ficam salvos no servidor do app.";
   if (changePasswordButton) changePasswordButton.hidden = !isLocalAuth();
-
-  if (backendDriveReady && googleDriveBackendStatus.connected) {
-    const stamp = formatSavedAt(state.auth?.googleDriveModifiedTime || googleDriveBackendStatus.modifiedTime || "");
-    const actionLabel = getGoogleDriveActionLabel(state.auth?.googleDriveLastAction || "");
-    const accountLabel = googleDriveBackendStatus.email ? ` (${googleDriveBackendStatus.email})` : "";
-    setGoogleDriveStatus(stamp
-      ? `Google Drive${accountLabel} ${actionLabel} · ultima sync em ${stamp}`
-      : `Google Drive${accountLabel} conectado via backend`);
-  } else if (backendDriveReady && driveAvailable) {
-    setGoogleDriveStatus("Google Drive aguardando conexao com o backend");
-  } else if (googleDriveBackendStatus.available && !googleDriveBackendStatus.configured) {
-    setGoogleDriveStatus("Google Drive indisponivel: configure o backend (.env).");
-  } else if (!googleReady) {
-    setGoogleDriveStatus("Google Drive indisponivel: configure o Client ID.");
-  } else if (!googleOriginReady) {
-    setGoogleDriveStatus("Google indisponivel neste modo de abertura. Use localhost ou https.");
-  } else if (hasGoogleDriveAccess()) {
-    const stamp = formatSavedAt(state.auth?.googleDriveModifiedTime || "");
-    const actionLabel = getGoogleDriveActionLabel(state.auth?.googleDriveLastAction || "");
-    setGoogleDriveStatus(stamp ? `Google Drive ${actionLabel} · ultima sync em ${stamp}` : `Google Drive ${actionLabel}`);
-  } else if (driveAvailable) {
-    setGoogleDriveStatus("Google Drive pronto para conectar");
-  } else {
-    setGoogleDriveStatus("Google Drive desconectado");
-  }
-}
-
-function decodeJwtPayload(token) {
-  try {
-    const [, payload] = String(token || "").split(".");
-    if (!payload) return null;
-    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
-    const padded = normalized + "=".repeat((4 - normalized.length % 4) % 4);
-    return JSON.parse(atob(padded));
-  } catch (error) {
-    console.error("Falha ao ler credencial Google:", error);
-    return null;
-  }
-}
-
-function ensureGoogleSignInClient() {
-  if (!isGoogleConfigured()) {
-    throw new Error("google_not_configured");
-  }
-  if (!isGoogleOriginSupported()) {
-    throw new Error("google_origin_not_supported");
-  }
-  if (!window.google?.accounts?.id) {
-    throw new Error("google_sign_in_not_ready");
-  }
-  if (!googleSignInReady) {
-    window.google.accounts.id.initialize({
-      client_id: GOOGLE_CONFIG.clientId,
-      callback: handleGoogleCredentialResponse,
-      auto_select: false,
-      cancel_on_tap_outside: true
-    });
-    googleSignInReady = true;
-  }
-}
-
-function renderGoogleSignInButton() {
-  const slot = document.getElementById("googleSignInSlot");
-  const divider = document.getElementById("authGoogleDivider");
-  if (!slot) return;
-
-  clearTimeout(googleSignInRenderTimer);
-  const canOfferGoogleLogin = isGoogleConfigured() && isGoogleOriginSupported() && (!state.auth?.username || isGoogleAuth());
-  slot.hidden = !canOfferGoogleLogin;
-  if (divider) divider.hidden = !canOfferGoogleLogin;
-  if (!canOfferGoogleLogin) {
-    slot.innerHTML = "";
-    return;
-  }
-
-  try {
-    ensureGoogleSignInClient();
-    slot.innerHTML = "";
-    window.google.accounts.id.renderButton(slot, {
-      type: "standard",
-      theme: currentTheme === "light" ? "outline" : "filled_black",
-      text: state.auth?.username ? "signin_with" : "continue_with",
-      shape: "pill",
-      size: "large",
-      width: 360,
-      logo_alignment: "left"
-    });
-  } catch (error) {
-    slot.textContent = "Carregando login Google...";
-    googleSignInRenderTimer = setTimeout(() => {
-      renderGoogleSignInButton();
-    }, 600);
-  }
-}
-
-function buildGoogleProfile(credentialResponse) {
-  const payload = decodeJwtPayload(credentialResponse?.credential || "");
-  if (!payload?.email || !payload?.sub) return null;
-  if (payload.email_verified === false) return null;
-  return {
-    provider: "google",
-    username: String(payload.email).trim(),
-    googleEmail: String(payload.email).trim(),
-    googleName: String(payload.name || payload.email).trim(),
-    googlePicture: String(payload.picture || ""),
-    googleSub: String(payload.sub).trim(),
-    googleDriveFileId: state.auth?.googleDriveFileId || "",
-    googleDriveModifiedTime: state.auth?.googleDriveModifiedTime || ""
-  };
-}
-
-async function finalizeGoogleLogin({ isFirstAccess = false } = {}) {
-  saveState({ skipGoogleSync: true });
-  await refreshGoogleDriveBackendStatus({ render: false });
-  renderScreen();
-
-  const restored = await restoreFromGoogleDrive({
-    silent: false,
-    preferredMode: "replace",
-    showSuccessToast: false,
-    showMissingToast: false
-  });
-
-  if (restored) {
-    state.auth.googleDriveLastAction = "restored_on_login";
-    saveState({ skipGoogleSync: true });
-    renderGoogleUi();
-    toast("Backup do Google Drive carregado apos o login");
-    return;
-  }
-
-  const syncAction = await syncGoogleDriveNow({
-    silent: false,
-    showSuccessToast: false,
-    showPromptToast: false
-  });
-
-  if (syncAction) {
-    state.auth.googleDriveLastAction = syncAction === "created" ? "created_on_login" : "updated";
-    saveState({ skipGoogleSync: true });
-    renderGoogleUi();
-    toast(syncAction === "created"
-      ? "Nenhum backup foi encontrado. Criamos um novo no Google Drive com os dados atuais."
-      : "Os dados atuais foram sincronizados com o Google Drive apos o login.");
-    return;
-  }
-
-  if (isFirstAccess) {
-    toast("Login com Google configurado com sucesso");
-    return;
-  }
-
-  toast("Login com Google realizado");
-}
-
-async function handleGoogleCredentialResponse(credentialResponse) {
-  const googleProfile = buildGoogleProfile(credentialResponse);
-  if (!googleProfile) {
-    toast("Não foi possível validar o login com Google");
-    return;
-  }
-
-  if (!state.auth?.username) {
-    let authResult = null;
-    try {
-      authResult = await readBackendJson("/api/auth/google-login", {
-        method: "POST",
-        requiresAuth: false,
-        body: JSON.stringify({
-          credential: String(credentialResponse?.credential || "")
-        })
-      });
-    } catch (error) {
-      toast("Não foi possível autenticar sua conta Google no backend");
-      return;
-    }
-    state.auth = normalizeAuth(googleProfile);
-    saveSession(googleProfile.username, "google", authResult?.sessionToken || "");
-    setActiveAppScreen("hub");
-    await finalizeGoogleLogin({ isFirstAccess: true });
-    return;
-  }
-
-  if (!isGoogleAuth()) {
-    toast("Este dashboard ainda usa acesso local. Entre com usuário e senha para continuar.");
-    return;
-  }
-
-  const sameGoogleAccount = state.auth.googleSub
-    ? state.auth.googleSub === googleProfile.googleSub
-    : state.auth.username === googleProfile.username;
-
-  if (!sameGoogleAccount) {
-    toast("Use a mesma conta Google vinculada a este dashboard");
-    return;
-  }
-
-  let authResult = null;
-  try {
-    authResult = await readBackendJson("/api/auth/google-login", {
-      method: "POST",
-      requiresAuth: false,
-      body: JSON.stringify({
-        credential: String(credentialResponse?.credential || "")
-      })
-    });
-  } catch (error) {
-    toast("Não foi possível autenticar sua conta Google no backend");
-    return;
-  }
-
-  state.auth = normalizeAuth({
-    ...state.auth,
-    ...googleProfile,
-    googleDriveFileId: state.auth.googleDriveFileId || googleProfile.googleDriveFileId,
-    googleDriveModifiedTime: state.auth.googleDriveModifiedTime || googleProfile.googleDriveModifiedTime
-  });
-  saveSession(state.auth.username, "google", authResult?.sessionToken || "");
-  setActiveAppScreen("hub");
-  await finalizeGoogleLogin();
-}
-
-function ensureGoogleIdentityClient() {
-  if (!isGoogleConfigured()) {
-    throw new Error("google_not_configured");
-  }
-  if (!isGoogleOriginSupported()) {
-    throw new Error("google_origin_not_supported");
-  }
-  if (!window.google?.accounts?.oauth2) {
-    throw new Error("google_identity_not_ready");
-  }
-  if (!googleTokenClient) {
-    googleTokenClient = window.google.accounts.oauth2.initTokenClient({
-      client_id: GOOGLE_CONFIG.clientId,
-      scope: GOOGLE_DRIVE_SCOPE,
-      callback: () => {},
-      error_callback: () => {}
-    });
-  }
-  return googleTokenClient;
-}
-
-function requestGoogleAccessToken(prompt = "", { interactive = true } = {}) {
-  return new Promise((resolve, reject) => {
-    try {
-      const activeToken = getActiveGoogleAccessToken();
-      driveDebug("request token:start", {
-        interactive,
-        hasToken: Boolean(activeToken),
-        prompt
-      });
-      if (activeToken) {
-        driveDebug("request token:reuse existing token");
-        resolve({
-          access_token: activeToken,
-          reused: true
-        });
-        return;
-      }
-      const tokenClient = ensureGoogleIdentityClient();
-      tokenClient.callback = (response) => {
-        if (response?.error) {
-          driveDebug("request token:error response", response);
-          reject(new Error(response.error));
-          return;
-        }
-        googleAccessToken = response.access_token || googleAccessToken;
-        persistGoogleToken(googleAccessToken, response?.expires_in || 0);
-        if (state.auth && !state.auth.googleDriveAuthorized) {
-          state.auth.googleDriveAuthorized = true;
-          saveState({ skipGoogleSync: true });
-        }
-        driveDebug("request token:success", {
-          hasAccessToken: Boolean(googleAccessToken),
-          scope: response?.scope || "",
-          expiresIn: response?.expires_in || null
-        });
-        resolve(response);
-      };
-      tokenClient.error_callback = (error) => {
-        driveDebug("request token:error callback", error);
-        reject(new Error(error?.type || error?.message || "google_token_error"));
-      };
-      const hasSavedDriveAuthorization = Boolean(state.auth?.googleDriveAuthorized);
-      const nextPrompt = interactive
-        ? (prompt || (hasSavedDriveAuthorization ? "" : "consent"))
-        : "none";
-      driveDebug("request token:dispatch", { prompt: nextPrompt });
-      tokenClient.requestAccessToken({ prompt: nextPrompt });
-    } catch (error) {
-      driveDebug("request token:exception", error);
-      reject(error);
-    }
-  });
-}
-
-async function googleApiFetch(url, options = {}) {
-  driveDebug("fetch:start", {
-    url,
-    method: options.method || "GET",
-    hasToken: Boolean(getActiveGoogleAccessToken())
-  });
-  if (!getActiveGoogleAccessToken()) await requestGoogleAccessToken("");
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      ...(options.headers || {}),
-      Authorization: `Bearer ${googleAccessToken}`
-    }
-  });
-  driveDebug("fetch:response", {
-    url,
-    method: options.method || "GET",
-    status: response.status,
-    ok: response.ok
-  });
-
-  if (response.status === 401) {
-    clearCachedGoogleToken();
-    driveDebug("fetch:retry after 401", { url });
-    await requestGoogleAccessToken("");
-    const retryResponse = await fetch(url, {
-      ...options,
-      headers: {
-        ...(options.headers || {}),
-        Authorization: `Bearer ${googleAccessToken}`
-      }
-    });
-    driveDebug("fetch:retry response", {
-      url,
-      method: options.method || "GET",
-      status: retryResponse.status,
-      ok: retryResponse.ok
-    });
-    return retryResponse;
-  }
-
-  return response;
-}
-
-async function getGoogleDriveFileMetadata() {
-  const query = encodeURIComponent(`name='${GOOGLE_DRIVE_FILE_NAME}' and 'appDataFolder' in parents and trashed=false`);
-  driveDebug("metadata:lookup", { fileName: GOOGLE_DRIVE_FILE_NAME });
-  const response = await googleApiFetch(`https://www.googleapis.com/drive/v3/files?q=${query}&spaces=appDataFolder&fields=files(id,name,modifiedTime)&pageSize=1`);
-  if (!response.ok) throw await createGoogleApiError("google_drive_lookup_failed", response);
-  const data = await response.json();
-  driveDebug("metadata:result", data.files?.[0] || null);
-  return data.files?.[0] || null;
-}
-
-async function createGoogleApiError(code, response) {
-  let details = "";
-  try {
-    const raw = await response.text();
-    details = raw || "";
-  } catch (error) {
-    details = "";
-  }
-
-  const suffix = details ? ` (${response.status}: ${details})` : ` (${response.status})`;
-  return new Error(`${code}${suffix}`);
-}
-
-async function uploadBackupToGoogleDrive() {
-  const metadata = await getGoogleDriveFileMetadata();
-  const boundary = `dashboard-vendas-${Date.now()}`;
-  const payload = JSON.stringify(getBackupPayload(), null, 2);
-  const fileMetadata = metadata?.id
-    ? {
-        name: GOOGLE_DRIVE_FILE_NAME,
-        mimeType: "application/json"
-      }
-    : {
-        name: GOOGLE_DRIVE_FILE_NAME,
-        mimeType: "application/json",
-        parents: ["appDataFolder"]
-      };
-  const multipartBody =
-    `--${boundary}\r\n` +
-    "Content-Type: application/json; charset=UTF-8\r\n\r\n" +
-    JSON.stringify(fileMetadata) +
-    `\r\n--${boundary}\r\n` +
-    "Content-Type: application/json; charset=UTF-8\r\n\r\n" +
-    payload +
-    `\r\n--${boundary}--`;
-
-  const endpoint = metadata?.id
-    ? `https://www.googleapis.com/upload/drive/v3/files/${metadata.id}?uploadType=multipart&fields=id,modifiedTime`
-    : "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,modifiedTime";
-  const method = metadata?.id ? "PATCH" : "POST";
-  driveDebug("upload:start", {
-    mode: metadata?.id ? "update" : "create",
-    fileId: metadata?.id || null,
-    payloadBytes: payload.length
-  });
-  const response = await googleApiFetch(endpoint, {
-    method,
-    headers: {
-      "Content-Type": `multipart/related; boundary=${boundary}`
-    },
-    body: multipartBody
-  });
-  if (!response.ok) throw await createGoogleApiError("google_drive_upload_failed", response);
-  const result = await response.json();
-  driveDebug("upload:success", result);
-  return {
-    ...result,
-    action: metadata?.id ? "updated" : "created"
-  };
-}
-
-async function downloadBackupFromGoogleDrive() {
-  const metadata = await getGoogleDriveFileMetadata();
-  if (!metadata?.id) return null;
-  driveDebug("download:start", { fileId: metadata.id });
-  const response = await googleApiFetch(`https://www.googleapis.com/drive/v3/files/${metadata.id}?alt=media`);
-  if (!response.ok) throw await createGoogleApiError("google_drive_download_failed", response);
-  const payload = await response.json();
-  driveDebug("download:success", {
-    fileId: metadata.id,
-    keys: Object.keys(payload || {})
-  });
-  return { metadata, payload };
-}
-
-function scheduleGoogleDriveSync() {
-  if (!canUseGoogleDrive()) return;
-  clearTimeout(googleDriveSyncTimer);
-  googleDriveSyncTimer = setTimeout(() => {
-    syncGoogleDriveNow({ silent: true });
-  }, 1200);
-}
-
-async function restoreGoogleDriveOnSessionStart() {
-  if (googleDriveBootstrapStarted) return false;
-  if (!canUseGoogleDrive()) return false;
-
-  googleDriveBootstrapStarted = true;
-  driveDebug("bootstrap:start", {
-    user: state.auth?.username || null,
-    provider: state.auth?.provider || "local"
-  });
-
-  if (!googleDriveBackendStatus.checked) {
-    await refreshGoogleDriveBackendStatus({ render: false });
-  }
-
-  const restored = await restoreFromGoogleDrive({
-    silent: true,
-    preferredMode: "replace",
-    showSuccessToast: false,
-    showMissingToast: false
-  });
-
-  if (restored) {
-    state.auth.googleDriveLastAction = "restored_on_login";
-    saveState({ skipGoogleSync: true });
-    renderGoogleUi();
-    driveDebug("bootstrap:restored", {
-      fileId: state.auth?.googleDriveFileId || null,
-      modifiedTime: state.auth?.googleDriveModifiedTime || null
-    });
-    toast("Backup do Google Drive carregado automaticamente");
-    return true;
-  }
-
-  driveDebug("bootstrap:no-remote-restore", {
-    hasToken: Boolean(googleAccessToken)
-  });
-  return false;
-}
-
-async function syncGoogleDriveNow({ silent = false, showSuccessToast = !silent, showPromptToast = !silent } = {}) {
-  if (!canUseGoogleDrive()) {
-    if (!silent) toast("Faca login para sincronizar");
-    return false;
-  }
-  if (googleSyncInFlight) {
-    driveDebug("sync:skip already running", { silent });
-    return false;
-  }
-
-  try {
-    driveDebug("sync:start", {
-      silent,
-      user: state.auth?.username || null,
-      provider: state.auth?.provider || "local",
-      lastFileId: state.auth?.googleDriveFileId || null
-    });
-    googleSyncInFlight = true;
-    renderGoogleUi();
-
-    if (!googleDriveBackendStatus.checked) {
-      await refreshGoogleDriveBackendStatus({ render: false });
-    }
-    if (googleDriveBackendStatus.available && googleDriveBackendStatus.configured) {
-      const connected = await ensureGoogleDriveBackendConnection({ interactive: !silent });
-      if (!connected) {
-        driveDebug("sync:backend waiting user authorization");
-        if (showPromptToast) toast("Clique em Sincronizar Google Drive para conectar sua conta");
-        return false;
-      }
-      const upload = await syncGoogleDriveViaBackend();
-      saveState({ skipGoogleSync: true });
-      renderGoogleUi();
-      driveDebug("sync:backend success", {
-        action: upload.action,
-        fileId: state.auth.googleDriveFileId,
-        modifiedTime: state.auth.googleDriveModifiedTime
-      });
-      if (showSuccessToast) toast(upload.action === "created" ? "Backup criado no Google Drive" : "Backup atualizado no Google Drive");
-      return upload.action || "updated";
-    }
-
-    const tokenResponse = await requestGoogleAccessToken("", { interactive: !silent });
-    if (!tokenResponse && !googleAccessToken) {
-      driveDebug("sync:waiting user authorization");
-      if (showPromptToast) toast("Clique em Sincronizar Google Drive para autorizar o acesso");
-      return false;
-    }
-    const upload = await uploadBackupToGoogleDrive();
-    state.auth.googleDriveFileId = upload.id || "";
-    state.auth.googleDriveModifiedTime = upload.modifiedTime || new Date().toISOString();
-    state.auth.googleDriveLastAction = upload.action || "updated";
-    saveState({ skipGoogleSync: true });
-    renderGoogleUi();
-    driveDebug("sync:success", {
-      action: upload.action,
-      fileId: state.auth.googleDriveFileId,
-      modifiedTime: state.auth.googleDriveModifiedTime
-    });
-    if (showSuccessToast) toast(upload.action === "created" ? "Backup criado no Google Drive" : "Backup atualizado no Google Drive");
-    return upload.action || "updated";
-  } catch (error) {
-    driveDebug("sync:error", {
-      message: error?.message || String(error)
-    });
-    console.error("Falha ao sincronizar com Google Drive:", error);
-    if (!silent) {
-      const message = String(error?.message || "");
-      if (message.includes("popup_closed")) {
-        toast("A autorização do Google Drive foi fechada antes de concluir");
-      } else if (message.includes("popup_failed_to_open")) {
-        toast("O navegador bloqueou a janela de autorização do Google Drive");
-      } else if (message.includes("google_drive_not_connected")) {
-        toast("Conecte sua conta Google Drive para concluir a sincronização");
-      } else if (message.includes("google_drive_backend_not_configured")) {
-        toast("O backend do Google Drive ainda nao foi configurado");
-      } else if (message.includes("access_denied")) {
-        toast("O acesso ao Google Drive foi negado");
-      } else {
-        toast("Não foi possível sincronizar com Google Drive");
-      }
-    }
-    return false;
-  } finally {
-    googleSyncInFlight = false;
-    renderGoogleUi();
-  }
-}
-
-async function restoreFromGoogleDrive({ silent = false, preferredMode = "merge", showSuccessToast = !silent, showMissingToast = !silent } = {}) {
-  if (!canUseGoogleDrive()) {
-    if (!silent) toast("Faca login para restaurar dados");
-    return false;
-  }
-  if (googleSyncInFlight) {
-    driveDebug("restore:skip already running", { silent });
-    return false;
-  }
-
-  try {
-    driveDebug("restore:start", {
-      silent,
-      mode: preferredMode,
-      user: state.auth?.username || null
-    });
-    googleSyncInFlight = true;
-    renderGoogleUi();
-
-    if (!googleDriveBackendStatus.checked) {
-      await refreshGoogleDriveBackendStatus({ render: false });
-    }
-    if (googleDriveBackendStatus.available && googleDriveBackendStatus.configured) {
-      const connected = await ensureGoogleDriveBackendConnection({ interactive: !silent });
-      if (!connected) {
-        driveDebug("restore:backend waiting user authorization");
-        if (!silent) toast("Clique em Restaurar do Google Drive para conectar sua conta");
-        return false;
-      }
-      const remote = await restoreGoogleDriveViaBackend(preferredMode);
-      saveState({ skipGoogleSync: true });
-      renderGoogleUi();
-      driveDebug("restore:backend success", {
-        fileId: state.auth.googleDriveFileId,
-        modifiedTime: state.auth.googleDriveModifiedTime
-      });
-      if (showSuccessToast) toast("Backup restaurado do Google Drive");
-      return true;
-    }
-
-    const tokenResponse = await requestGoogleAccessToken("", { interactive: !silent });
-    if (!tokenResponse && !googleAccessToken) {
-      driveDebug("restore:waiting user authorization");
-      if (!silent) toast("Clique em Restaurar do Google Drive para autorizar o acesso");
-      return false;
-    }
-    const remote = await downloadBackupFromGoogleDrive();
-    if (!remote) {
-      if (showMissingToast) toast("Nenhum backup encontrado no Google Drive");
-      return false;
-    }
-
-    applyImportedBackup(remote.payload, preferredMode);
-    state.auth.googleDriveFileId = remote.metadata.id || "";
-    state.auth.googleDriveModifiedTime = remote.metadata.modifiedTime || "";
-    state.auth.googleDriveLastAction = "restored";
-    saveState({ skipGoogleSync: true });
-    renderGoogleUi();
-    driveDebug("restore:success", {
-      fileId: state.auth.googleDriveFileId,
-      modifiedTime: state.auth.googleDriveModifiedTime
-    });
-    if (showSuccessToast) toast("Backup restaurado do Google Drive");
-    return true;
-  } catch (error) {
-    driveDebug("restore:error", {
-      message: error?.message || String(error)
-    });
-    console.error("Falha ao restaurar do Google Drive:", error);
-    if (!silent) {
-      const message = String(error?.message || "");
-      if (message.includes("popup_closed")) {
-        toast("A autorização do Google Drive foi fechada antes de concluir");
-      } else if (message.includes("popup_failed_to_open")) {
-        toast("O navegador bloqueou a janela de autorização do Google Drive");
-      } else if (message.includes("google_drive_not_connected")) {
-        toast("Conecte sua conta Google Drive para restaurar o backup");
-      } else if (message.includes("google_drive_file_not_found")) {
-        if (showMissingToast) toast("Nenhum backup encontrado no Google Drive");
-      } else if (message.includes("google_drive_backend_not_configured")) {
-        toast("O backend do Google Drive ainda nao foi configurado");
-      } else if (message.includes("access_denied")) {
-        toast("O acesso ao Google Drive foi negado");
-      } else {
-        toast("Não foi possível restaurar do Google Drive");
-      }
-    }
-    return false;
-  } finally {
-    googleSyncInFlight = false;
-    renderGoogleUi();
-  }
 }
 
 function closeHeaderMenu() {
@@ -1932,6 +1152,34 @@ function getMonthDays(month) {
   const monthIndex = ALL_MONTHS.indexOf(month);
   if (monthIndex < 0) return 30;
   return new Date(getCurrentYear(), monthIndex + 1, 0).getDate();
+}
+
+function getMonthIndexByName(month) {
+  return ALL_MONTHS.indexOf(month);
+}
+
+function getCurrentYear() {
+  return new Date().getFullYear();
+}
+
+function getSuggestedInputDate(month) {
+  const monthIndex = getMonthIndexByName(month);
+  if (monthIndex < 0) return "";
+  const today = new Date();
+  const day = Math.min(today.getDate(), getMonthDays(month));
+  const monthNum = String(monthIndex + 1).padStart(2, "0");
+  const dayNum = String(day).padStart(2, "0");
+  return `${getCurrentYear()}-${monthNum}-${dayNum}`;
+}
+
+function syncSaleDateWithMonth(silent = false) {
+  const month = document.getElementById("inputMonth")?.value || state.currentMonth;
+  const dateInput = document.getElementById("inputDate");
+  if (!dateInput) return;
+  const suggested = getSuggestedInputDate(month);
+  if (dateInput.value !== suggested) {
+    dateInput.value = suggested;
+  }
 }
 
 function getWeekBuckets(monthName, days) {
@@ -2083,25 +1331,11 @@ function varH(current, previous) {
   return `<span class="${cls}">${arrow} ${Math.abs(diff).toFixed(1)}%</span>`;
 }
 
-function getPlatformFaviconUrl(platform) {
-  const candidates = [
-    platform?.key,
-    platform?.name,
-    (platform?.name || "").replace(/\s+/g, ""),
-    (platform?.name || "").replace(/\s+/g, "-")
-  ]
-    .map((value) => slugifyText(value))
-    .filter(Boolean);
-  const matchedKey = candidates.find((key) => PLATFORM_FAVICON_DOMAINS[key]);
-  if (!matchedKey) return "";
-  const domain = PLATFORM_FAVICON_DOMAINS[matchedKey];
-  return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=64`;
-}
-
 function platformIcon(platform) {
-  const faviconUrl = getPlatformFaviconUrl(platform);
-  if (!faviconUrl) return "";
-  return `<span class="platform-icon"><img class="platform-favicon" src="${escapeAttribute(faviconUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentElement.style.display='none'"></span>`;
+  const label = String(platform?.icon || platform?.name || "").slice(0, 2).toUpperCase();
+  if (!label) return "";
+  const textColor = platform?.iconText || "#ffffff";
+  return `<span class="platform-icon platform-icon-text" style="background:${escapeAttribute(platform?.color || "#2563eb")};color:${escapeAttribute(textColor)}">${escapeHtml(label)}</span>`;
 }
 
 function platformBadge(platform, shortName = false) {
@@ -2129,6 +1363,7 @@ function setActiveAppScreen(screen) {
   state.currentScreen = activeAppScreen;
 }
 
+// Modificar a função renderScreen() para garantir que os dados estejam disponíveis
 function renderScreen() {
   const authScreen = document.getElementById("authScreen");
   const setupScreen = document.getElementById("setupScreen");
@@ -2153,8 +1388,11 @@ function renderScreen() {
   } else if (!isSetupComplete()) {
     setupScreen.hidden = false;
     renderSetupScreen();
+    console.log("Setup screen - Platforms:", getPlatforms().length);
   } else if (activeAppScreen === "dashboard") {
     dashboardScreen.hidden = false;
+    // CORREÇÃO: Garantir que o mês atual exista antes de renderizar
+    ensureStateMonths(state);
     renderDashboardShell();
   } else if (activeAppScreen === "calculator") {
     calculatorScreen.hidden = false;
@@ -2163,7 +1401,7 @@ function renderScreen() {
     hubScreen.hidden = false;
     renderHubScreen();
   }
-  renderGoogleUi();
+  renderAuthUi();
 }
 
 function renderAuthScreen() {
@@ -2174,67 +1412,37 @@ function renderAuthScreen() {
   }
 
   const hasExistingAuth = Boolean(state.auth?.username);
-  const authProvider = state.auth?.provider || "local";
   const usernameInput = document.getElementById("authUsername");
   const passwordInput = document.getElementById("authPassword");
   const createButton = document.getElementById("authModeCreateButton");
   const loginButton = document.getElementById("authModeLoginButton");
-  const authModeSwitch = document.getElementById("authModeSwitch");
-  const localFields = document.getElementById("authLocalFields");
   const submitButton = document.getElementById("authSubmitButton");
-  const usesGoogleAuth = hasExistingAuth && authProvider === "google";
 
-  if (usesGoogleAuth) {
-    authMode = "login";
-  } else {
+  if (!authMode || (hasExistingAuth && authMode === "create")) {
     authMode = hasExistingAuth ? "login" : "create";
   }
 
   createButton.classList.toggle("active", authMode === "create");
   loginButton.classList.toggle("active", authMode === "login");
-  loginButton.disabled = usesGoogleAuth || !hasExistingAuth;
-  createButton.disabled = usesGoogleAuth || hasExistingAuth;
-  usernameInput.disabled = usesGoogleAuth;
-  passwordInput.disabled = usesGoogleAuth;
-  if (authModeSwitch) authModeSwitch.hidden = usesGoogleAuth || hasExistingAuth;
-  if (localFields) localFields.hidden = usesGoogleAuth;
+  loginButton.disabled = false;
+  createButton.disabled = false;
+  usernameInput.disabled = false;
+  passwordInput.disabled = false;
+  submitButton.disabled = false;
+  submitButton.hidden = false;
 
-  submitButton.disabled = usesGoogleAuth;
-  submitButton.hidden = usesGoogleAuth;
+  document.getElementById("authTitle").textContent = authMode === "create" ? "Criar acesso" : "Fazer login";
+  document.getElementById("authSubtitle").textContent = authMode === "create"
+    ? "Crie um acesso local simples para proteger seu dashboard nesta maquina."
+    : "Use seu acesso local para entrar no dashboard.";
+  submitButton.textContent = authMode === "create" ? "Criar acesso" : "Entrar";
 
-  if (usesGoogleAuth) {
-    document.getElementById("authTitle").textContent = "Entrar com Google";
-    document.getElementById("authSubtitle").textContent = `Use a conta Google ${state.auth.googleEmail || state.auth.username} para acessar este dashboard.`;
-  } else {
-    document.getElementById("authTitle").textContent = authMode === "create" ? "Criar acesso" : "Fazer login";
-    document.getElementById("authSubtitle").textContent = authMode === "create"
-      ? "Crie um acesso local simples para proteger seu dashboard nesta maquina."
-      : "Use seu acesso local para entrar no dashboard.";
-    submitButton.textContent = authMode === "create" ? "Criar acesso" : "Entrar";
-  }
-
-  if (!usesGoogleAuth && authMode === "create") {
-    usernameInput.readOnly = false;
-    usernameInput.value = "";
-    usernameInput.placeholder = "Seu usuário";
-  } else if (!usesGoogleAuth) {
-    usernameInput.readOnly = true;
-    usernameInput.value = state.auth.username;
-    usernameInput.placeholder = state.auth.username;
-  } else {
-    usernameInput.readOnly = true;
-    usernameInput.value = "";
-    usernameInput.placeholder = "Seu usuário";
-  }
+  usernameInput.readOnly = false;
+  usernameInput.value = authMode === "create" ? "" : (state.auth?.username || "");
+  usernameInput.placeholder = state.auth?.username || "Seu usuario";
   passwordInput.value = "";
-  renderGoogleSignInButton();
 }
-
 async function handleAuthSubmit() {
-  if (isGoogleAuth()) {
-    toast("Use o botao do Google para entrar");
-    return;
-  }
   const username = document.getElementById("authUsername").value.trim();
   const password = document.getElementById("authPassword").value;
   if (!username || !password) {
@@ -2249,17 +1457,19 @@ async function handleAuthSubmit() {
         requiresAuth: false,
         body: JSON.stringify({ username, password })
       });
+      if (!result?.sessionToken) {
+      toast("Erro ao criar acesso: resposta inválida do servidor");
+      return;
+      };
       state.auth = normalizeAuth({
         provider: "local",
-        username,
-        googleDriveFileId: state.auth?.googleDriveFileId || "",
-        googleDriveModifiedTime: state.auth?.googleDriveModifiedTime || ""
+        username
       });
-      saveState({ skipGoogleSync: true });
       saveSession(username, "local", result.sessionToken || "");
+      saveState({ localOnly: true });
+      await loadBusinessStateFromServer({ migrateLocal: true });
       setActiveAppScreen("hub");
       toast("Acesso criado com sucesso");
-      await refreshGoogleDriveBackendStatus();
       renderScreen();
     } catch (error) {
       toast(error?.message === "user_already_exists" ? "Esse usuário já existe" : "Não foi possível criar o acesso");
@@ -2273,16 +1483,20 @@ async function handleAuthSubmit() {
       requiresAuth: false,
       body: JSON.stringify({ username, password })
     });
+      if (!result?.sessionToken) {
+    toast("Erro ao fazer login: resposta inválida do servidor");
+    return;
+     };
     state.auth = normalizeAuth({
       ...state.auth,
       provider: "local",
       username,
       password: ""
     });
-    saveState({ skipGoogleSync: true });
     saveSession(username, "local", result.sessionToken || "");
+    saveState({ localOnly: true });
+    await loadBusinessStateFromServer({ migrateLocal: true });
     setActiveAppScreen("hub");
-    await refreshGoogleDriveBackendStatus();
     renderScreen();
   } catch (error) {
     toast("Usuario ou senha invalidos");
@@ -2304,10 +1518,10 @@ async function handleLogout() {
     }
   }
   clearSession();
-  clearCachedGoogleToken();
-  resetGoogleDriveBackendStatus();
+
+
   setActiveAppScreen("hub");
-  authMode = state.auth?.provider === "google" ? "login" : (state.auth?.username ? "login" : "create");
+  authMode = state.auth?.username ? "login" : "create";
   closeHeaderMenu();
   renderScreen();
 }
@@ -2548,7 +1762,11 @@ function renderCalculatorScreen() {
 }
 
 function renderTabs() {
-  const months = Object.keys(state.db);
+  // ORDEM CORRETA: meses em ordem cronológica (Jan → Dez)
+  const months = Object.keys(state.db).sort((a, b) => {
+    return ALL_MONTHS.indexOf(a) - ALL_MONTHS.indexOf(b);
+  });
+  
   document.getElementById("monthTabs").innerHTML = months
     .map((month) => `<button class="month-tab ${month === state.currentMonth ? "active" : ""}" data-month="${month}" type="button">${SHORT[month] || month}</button>`)
     .join("");
@@ -2563,6 +1781,14 @@ function renderTabs() {
   });
 }
 
+// Adicione esta função ANTES de renderDashboardShell
+function renderCurrentUserBadge() {
+  const el = document.getElementById("currentUserBadge");
+  if (!el) return;
+  const username = state.auth?.username || "Usuário";
+  el.textContent = `Usuário: ${username}`;
+}
+
 function renderDashboardShell() {
   document.getElementById("brandTitle").textContent = `Dashboard de ${getPlatforms().length} Plataforma${getPlatforms().length > 1 ? "s" : ""}`;
   renderCurrentUserBadge();
@@ -2572,12 +1798,12 @@ function renderDashboardShell() {
   if (inputMonth) inputMonth.value = state.currentMonth;
   syncSaleDateWithMonth(true);
   renderAll();
-  const baseMessage = getPlatforms().length ? `Dados locais de ${state.auth.username}` : `Dados locais de ${state.auth.username} · cadastre plataformas em "Plataformas"`;
+  const baseMessage = getPlatforms().length ? `Dados no servidor de ${state.auth.username}` : `Dados no servidor de ${state.auth.username} · cadastre plataformas em "Plataformas"`;
   const savedAt = formatSavedAt(loadLastSavedAt());
   setStorageStatus(savedAt ? `${baseMessage} · salvo em ${savedAt}` : baseMessage);
   const returnMonth = document.getElementById("returnMonth");
   if (returnMonth) returnMonth.value = state.currentMonth;
-  renderGoogleUi();
+  renderAuthUi();
 }
 
 function switchMonth(month) {
@@ -3166,10 +2392,6 @@ function openImportBackupModal() {
 }
 
 function openChangePasswordModal() {
-  if (!isLocalAuth()) {
-    toast("A conta Google nao usa senha local");
-    return;
-  }
   closeHeaderMenu();
   document.getElementById("currentPasswordInput").value = "";
   document.getElementById("newPasswordInput").value = "";
@@ -3184,10 +2406,6 @@ function openDailyDetailsModal() {
 }
 
 async function saveChangedPassword() {
-  if (!isLocalAuth()) {
-    toast("A conta Google nao usa senha local");
-    return;
-  }
   const currentPassword = document.getElementById("currentPasswordInput").value;
   const newPassword = document.getElementById("newPasswordInput").value;
   const confirmPassword = document.getElementById("confirmPasswordInput").value;
@@ -3222,7 +2440,7 @@ async function saveChangedPassword() {
       ...state.auth,
       password: ""
     });
-    saveState({ skipGoogleSync: true });
+    saveState();
     closeModal("changePasswordModal");
     toast("Senha atualizada com sucesso");
   } catch (error) {
@@ -3364,11 +2582,8 @@ function exportBackup() {
 
 async function saveNow() {
   saveState();
-  if (hasGoogleDriveAccess()) {
-    await syncGoogleDriveNow();
-  } else {
-    toast("Dados salvos localmente");
-  }
+  await persistBusinessStateToServer();
+  toast("Dados salvos no servidor");
   closeHeaderMenu();
 }
 
@@ -3408,13 +2623,13 @@ function applyImportedBackup(payload, mode = "merge") {
 function updatePricingValue(field, value) {
   if (!state.pricing) state.pricing = normalizePricing({}, getPlatforms());
   state.pricing[field] = Number(value || 0);
-  saveState({ skipGoogleSync: true });
+  saveState();
   if (activeAppScreen === "calculator") renderCalculatorScreen();
 }
 
 function updatePricingMode(mode) {
   state.pricing.mode = mode === "profit" ? "profit" : "margin";
-  saveState({ skipGoogleSync: true });
+  saveState();
   if (activeAppScreen === "calculator") renderCalculatorScreen();
 }
 
@@ -3426,7 +2641,7 @@ function updatePricingProfileValue(platformKey, field, value) {
   }
   state.pricing.profiles[platformKey][field] = Number(value || 0);
   state.pricing.profiles[platformKey].sourceType = "custom";
-  saveState({ skipGoogleSync: true });
+  saveState();
   if (activeAppScreen === "calculator") renderCalculatorScreen();
 }
 
@@ -3434,9 +2649,26 @@ async function importBackupFile(file, mode = pendingImportMode) {
   if (!file) return;
   try {
     const payload = JSON.parse(await file.text());
+    
+    // 👇 ADICIONE ESTA VERIFICAÇÃO 👇
+    const isGoogleBackup = payload?.state?.auth?.provider === "google" || 
+                          payload?.state?.auth?.googleEmail;
+    
+    if (isGoogleBackup) {
+      console.log("Detectado backup do Google, migrando...");
+      await migrateFromGoogleBackup(payload);
+    }
+    
     applyImportedBackup(payload, mode);
     closeModal("importBackupModal");
-    toast(mode === "replace" ? "Backup importado e substituido com sucesso" : "Backup importado com sucesso");
+    
+    const message = isGoogleBackup 
+      ? "Backup do Google migrado com sucesso!" 
+      : mode === "replace" 
+        ? "Backup importado e substituido com sucesso" 
+        : "Backup importado com sucesso";
+    
+    toast(message);
   } catch (error) {
     console.error("Falha ao importar backup:", error);
     toast("Não foi possível importar o backup");
@@ -3445,10 +2677,6 @@ async function importBackupFile(file, mode = pendingImportMode) {
 
 function bindEvents() {
   document.getElementById("authModeLoginButton").addEventListener("click", () => {
-    if (!state.auth?.username) {
-      toast("Crie um acesso primeiro");
-      return;
-    }
     authMode = "login";
     renderAuthScreen();
   });
@@ -3485,14 +2713,6 @@ function bindEvents() {
   document.getElementById("changePasswordButton").addEventListener("click", openChangePasswordModal);
   document.getElementById("openDailyDetailsButton").addEventListener("click", openDailyDetailsModal);
   document.getElementById("saveNowButton").addEventListener("click", saveNow);
-  document.getElementById("syncGoogleDriveButton").addEventListener("click", () => {
-    closeHeaderMenu();
-    syncGoogleDriveNow();
-  });
-  document.getElementById("restoreGoogleDriveButton").addEventListener("click", () => {
-    closeHeaderMenu();
-    restoreFromGoogleDrive();
-  });
   document.getElementById("exportBackupButton").addEventListener("click", exportBackup);
   document.getElementById("importBackupButton").addEventListener("click", openImportBackupModal);
   document.getElementById("menuToggleButton").addEventListener("click", toggleHeaderMenu);
@@ -3602,27 +2822,47 @@ function bindEvents() {
   });
 }
 
-function init() {
+// Substitua a função init() atual (linhas ~1780) por esta versão corrigida:
+async function init() {
   const storedAuth = loadStoredAuth();
   if (!state.auth?.username && storedAuth?.username) {
     state.auth = storedAuth;
-    saveState({ skipGoogleSync: true });
+    saveState();
   }
-  ensureStateMonths(state);
+  
   applyTheme();
   bindEvents();
+  
   const menuButton = document.getElementById("menuToggleButton");
   if (menuButton) menuButton.textContent = "\u2630";
   const themeButton = document.getElementById("themeToggleButton");
   if (themeButton) {
     themeButton.textContent = currentTheme === "light" ? "\u263E" : "\u2600";
   }
+  
   window.addEventListener("beforeunload", saveState);
-  renderGoogleUi();
+  
+  // Carregar dados primeiro
+  if (isSessionActive()) {
+    try {
+      await loadBusinessStateFromServer({ migrateLocal: true });
+    } catch (error) {
+      console.error("Falha ao carregar dados:", error);
+    }
+  } else {
+    // Tentar carregar dados locais
+    const legacyState = loadLegacyBusinessState();
+    if (legacyState) {
+      applyBusinessState(legacyState);
+    }
+  }
+  
+  // Garantir que o mês atual tenha dados
+  ensureStateMonths(state);
+  
+  // Renderizar a tela APÓS carregar os dados
   renderScreen();
-  refreshGoogleDriveBackendStatus();
   void migrateLegacyLocalAuthIfNeeded();
-  restoreGoogleDriveOnSessionStart();
 }
 
-init();
+void init();

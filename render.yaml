@@ -8,12 +8,8 @@ services:
     autoDeploy: true
     envVars:
       - key: NODE_VERSION
-        value: 18
+        value: 24
       - key: APP_ORIGIN
         sync: false
-      - key: GOOGLE_CLIENT_ID
-        sync: false
-      - key: GOOGLE_CLIENT_SECRET
-        sync: false
-      - key: GOOGLE_REDIRECT_URI
+      - key: SQLITE_DATABASE_PATH
         sync: false
