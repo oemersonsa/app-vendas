@@ -145,7 +145,7 @@ let serverSaveQueued = false;
 const state = loadState();
 let currentTheme = loadTheme();
 let sessionUser = loadSession();
-activeAppScreen = state.currentScreen || "hub";
+activeAppScreen = isKnownAppScreen(state.currentScreen) ? state.currentScreen : "hub";
 
 const R = (v) => "R$ " + Number(v || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const RS = (v) => {
@@ -158,6 +158,10 @@ const RS = (v) => {
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function isKnownAppScreen(screen) {
+  return ["hub", "dashboard", "calculator", "dailyClose"].includes(screen);
 }
 
 // ─── UI Utilities ─────────────────────────────────────────────────────────────
@@ -611,7 +615,7 @@ function normalizeState(raw) {
     db: {},
     currentMonth: raw?.currentMonth || base.currentMonth,
     pricing: clone(PRICING_DEFAULTS),
-    currentScreen: raw?.currentScreen === "dashboard" || raw?.currentScreen === "calculator" ? raw.currentScreen : "hub"
+    currentScreen: isKnownAppScreen(raw?.currentScreen) ? raw.currentScreen : "hub"
   };
 
   Object.keys(rawDb).forEach((month) => {
@@ -644,7 +648,7 @@ function loadState() {
       const parsed = JSON.parse(authRaw);
       const next = defaultState();
       next.auth = normalizeAuth(parsed.auth);
-      next.currentScreen = parsed.currentScreen === "dashboard" || parsed.currentScreen === "calculator" ? parsed.currentScreen : "hub";
+      next.currentScreen = isKnownAppScreen(parsed.currentScreen) ? parsed.currentScreen : "hub";
       return next;
     }
     const raw = localStorage.getItem(AUTH_STORAGE_KEY) || localStorage.getItem(STORAGE_KEY) || localStorage.getItem(STORAGE_BACKUP_KEY);
@@ -875,7 +879,22 @@ localStorage.removeItem(STORAGE_BACKUP_KEY);
 }
 
 function loadTheme() {
-  return localStorage.getItem(THEME_KEY) === "light" ? "light" : "dark";
+  // Alterar de "light" para "dark" como padrão
+  const saved = localStorage.getItem(THEME_KEY);
+  return saved === "light" ? "light" : "dark";
+}
+
+function applyTheme() {
+  document.body.classList.toggle("light-theme", currentTheme === "light");
+  // Adicionar classe dark-theme explicitamente
+  document.body.classList.toggle("dark-theme", currentTheme === "dark");
+  
+  const button = document.getElementById("themeToggleButton");
+  if (button) {
+    button.textContent = currentTheme === "light" ? "☾" : "☀";
+    button.setAttribute("aria-label", currentTheme === "light" ? "Ativar modo escuro" : "Ativar modo claro");
+    button.title = currentTheme === "light" ? "Modo Escuro" : "Modo Claro";
+  }
 }
 
 function saveTheme() {
@@ -1129,6 +1148,7 @@ function updateImportModeUI() {
 
 function applyTheme() {
   document.body.classList.toggle("light-theme", currentTheme === "light");
+  document.body.classList.toggle("dark-theme", currentTheme === "dark");
   const button = document.getElementById("themeToggleButton");
   if (button) {
     button.textContent = currentTheme === "light" ? "☾" : "☀";
@@ -1279,7 +1299,15 @@ function calcTotals(month, options = {}) {
 }
 
 function getComparisonPeriod(month) {
-  const previousName = prevMonth(month);
+  // Ordenar meses em ordem cronológica (Janeiro → Dezembro)
+  const sortedMonths = Object.keys(state.db).sort((a, b) => {
+    return ALL_MONTHS.indexOf(a) - ALL_MONTHS.indexOf(b);
+  });
+  
+  // Encontrar o mês anterior na ordem cronológica
+  const currentIndex = sortedMonths.indexOf(month);
+  const previousName = currentIndex > 0 ? sortedMonths[currentIndex - 1] : null;
+  
   const cutoffDay = getLastLoggedDay(month);
   return {
     previousName,
@@ -1302,6 +1330,16 @@ function calcProjection(month) {
   const projectedGross = salesDailyAverage * monthDays;
   const projectedOrders = ordersDailyAverage * monthDays;
   const projectedReturns = returnsDailyAverage * monthDays;
+  const platforms = getPlatforms().map((platform) => {
+    const realizedGross = Number(totals.sales[platform.key] || 0);
+    const dailyAverage = loggedDays > 0 ? realizedGross / loggedDays : 0;
+    return {
+      key: platform.key,
+      realizedGross,
+      dailyAverage,
+      projectedGross: dailyAverage * monthDays
+    };
+  });
   return {
     loggedDays,
     monthDays,
@@ -1312,6 +1350,7 @@ function calcProjection(month) {
     projectedOrders,
     projectedReturns,
     projectedNet: projectedGross - projectedReturns,
+    platforms,
     currentReturnRate: getReturnRate(totals.totalRet, totals.gross),
     projectedReturnRate: getReturnRate(projectedReturns, projectedGross)
   };
@@ -1359,7 +1398,7 @@ function isSetupComplete() {
 }
 
 function setActiveAppScreen(screen) {
-  activeAppScreen = screen === "dashboard" || screen === "calculator" ? screen : "hub";
+  activeAppScreen = isKnownAppScreen(screen) ? screen : "hub";
   state.currentScreen = activeAppScreen;
 }
 
@@ -1370,6 +1409,7 @@ function renderScreen() {
   const hubScreen = document.getElementById("hubScreen");
   const dashboardScreen = document.getElementById("dashboardScreen");
   const calculatorScreen = document.getElementById("calculatorScreen");
+  const dailyCloseScreen = document.getElementById("dailyCloseScreen");
   const hasAuth = Boolean(state.auth?.username);
   const isLoggedIn = Boolean(hasAuth && isSessionActive());
 
@@ -1380,6 +1420,7 @@ function renderScreen() {
   hubScreen.hidden = true;
   dashboardScreen.hidden = true;
   calculatorScreen.hidden = true;
+  dailyCloseScreen.hidden = true;
 
   if (!hasAuth || !isLoggedIn) {
     destroyCharts();
@@ -1397,6 +1438,9 @@ function renderScreen() {
   } else if (activeAppScreen === "calculator") {
     calculatorScreen.hidden = false;
     renderCalculatorScreen();
+  } else if (activeAppScreen === "dailyClose") {
+    dailyCloseScreen.hidden = false;
+    renderDailyCloseScreen();
   } else {
     hubScreen.hidden = false;
     renderHubScreen();
@@ -1562,6 +1606,8 @@ function openSetupEditor() {
   document.getElementById("dashboardScreen").hidden = true;
   const calculatorScreen = document.getElementById("calculatorScreen");
   if (calculatorScreen) calculatorScreen.hidden = true;
+  const dailyCloseScreen = document.getElementById("dailyCloseScreen");
+  if (dailyCloseScreen) dailyCloseScreen.hidden = true;
   resetPlatformForm();
   renderSetupScreen();
 }
@@ -1658,10 +1704,105 @@ function openCalculatorScreen() {
   renderScreen();
 }
 
+function openDailyCloseScreen() {
+  setActiveAppScreen("dailyClose");
+  closeHeaderMenu();
+  renderScreen();
+}
+
 function renderHubScreen() {
   const username = state.auth?.username || "Usuario";
-  document.getElementById("hubGreeting").textContent = `Bem-vindo, ${username}`;
-  document.getElementById("hubPlatformCount").textContent = `${getPlatforms().length} plataforma${getPlatforms().length > 1 ? "s" : ""} cadastrada${getPlatforms().length > 1 ? "s" : ""}`;
+  const shell = document.querySelector("#hubScreen .hub-shell");
+  if (!shell) return;
+
+  ensureMonthData(state.currentMonth);
+  const month = state.currentMonth || getDefaultMonth();
+  const totals = calcTotals(month);
+  const platforms = getPlatforms();
+  const activePlatforms = platforms.filter((platform) => Number(totals.sales[platform.key] || 0) > 0);
+  const returnRate = getReturnRate(totals.totalRet, totals.gross);
+  const loggedDays = getLoggedDays(month);
+  const monthDays = getMonthDays(month);
+  const progress = monthDays > 0 ? Math.min((loggedDays / monthDays) * 100, 100) : 0;
+  const lastLoggedDay = getLastLoggedDay(month);
+  const platformPreview = platforms.slice(0, 5).map((platform) => `
+    <span class="hub-platform-pill">${platformIcon(platform)}${escapeHtml(platform.name)}</span>
+  `).join("");
+  const overflowCount = Math.max(platforms.length - 5, 0);
+
+  shell.innerHTML = `
+    <div class="hub-topbar">
+      <div class="logo"><div class="logo-dot"></div>Dashboard de Vendas</div>
+      <div class="hub-topbar-actions">
+        <button class="btn btn-secondary" id="hubImportBackupButton" type="button">Importar</button>
+        <button class="btn btn-secondary" id="hubLogoutButton" type="button">Sair</button>
+      </div>
+    </div>
+    <div class="hub-hero">
+      <div class="hub-copy">
+        <span class="hub-eyebrow" id="hubMonthName">${escapeHtml(month)} ${getCurrentYear()}</span>
+        <h1 id="hubGreeting">Bem-vindo, ${escapeHtml(username)}</h1>
+        <p>Escolha uma area para trabalhar. Tudo fica separado por paginas, com acesso rapido ao que voce usa no dia a dia.</p>
+        <div class="hub-platform-strip" id="hubPlatformStrip">
+          ${platformPreview || '<span class="hub-platform-pill">Nenhuma plataforma</span>'}
+          ${overflowCount ? `<span class="hub-platform-pill">+${overflowCount}</span>` : ""}
+        </div>
+      </div>
+      <div class="hub-summary">
+        <div class="hub-summary-head">
+          <span>Resumo do mes</span>
+          <strong id="hubMetricNet">${RS(totals.net)}</strong>
+        </div>
+        <div class="hub-meter"><span id="hubMeterFill" style="width:${progress.toFixed(1)}%"></span></div>
+        <div class="hub-summary-grid">
+          <div><span>Bruto</span><strong id="hubMetricGross">${RS(totals.gross)}</strong></div>
+          <div><span>Pedidos</span><strong id="hubMetricOrders">${totals.orders}</strong></div>
+          <div><span>Devolucoes</span><strong id="hubMetricReturns">${returnRate.toFixed(1)}%</strong></div>
+        </div>
+        <div class="hub-summary-note" id="hubLastUpdate">${loggedDays ? `${loggedDays} de ${monthDays} dias lancados${lastLoggedDay ? `, ultimo dia ${lastLoggedDay}` : ""}` : "Aguardando lancamentos"} &middot; ${activePlatforms.length} ativa${activePlatforms.length === 1 ? "" : "s"}</div>
+      </div>
+    </div>
+    <div class="hub-grid">
+      <button class="hub-card hub-card-primary" id="openDashboardCard" type="button">
+        <span class="hub-card-icon">01</span>
+        <span class="hub-card-kicker">Vendas e relatorios</span>
+        <strong>Dashboard</strong>
+        <span>Indicadores, graficos, lancamentos e comparativos mensais.</span>
+      </button>
+      <button class="hub-card" id="openCalculatorCard" type="button">
+        <span class="hub-card-icon">02</span>
+        <span class="hub-card-kicker">Preco ideal</span>
+        <strong>Calculadora</strong>
+        <span>Simule comissao, frete, margem e lucro por plataforma.</span>
+      </button>
+      <button class="hub-card" id="hubManagePlatformsButton" type="button">
+        <span class="hub-card-icon">03</span>
+        <span class="hub-card-kicker">Cadastro base</span>
+        <strong>Plataformas</strong>
+        <span>Adicione ou ajuste marketplaces, cores e siglas.</span>
+      </button>
+      <button class="hub-card" id="hubImportBackupCard" type="button">
+        <span class="hub-card-icon">04</span>
+        <span class="hub-card-kicker">Dados</span>
+        <strong>Backup</strong>
+        <span>Importe uma copia salva para mesclar ou substituir dados.</span>
+      </button>
+      <button class="hub-card" id="openDailyCloseCard" type="button">
+        <span class="hub-card-icon">05</span>
+        <span class="hub-card-kicker">Rotina diaria</span>
+        <strong>Fechamento Diario</strong>
+        <span>Some vendas e devolucoes por plataforma e gere o TXT.</span>
+      </button>
+    </div>
+  `;
+
+  document.getElementById("openDashboardCard").addEventListener("click", openDashboardScreen);
+  document.getElementById("openCalculatorCard").addEventListener("click", openCalculatorScreen);
+  document.getElementById("openDailyCloseCard").addEventListener("click", openDailyCloseScreen);
+  document.getElementById("hubManagePlatformsButton").addEventListener("click", openSetupEditor);
+  document.getElementById("hubImportBackupButton").addEventListener("click", openImportBackupModal);
+  document.getElementById("hubImportBackupCard").addEventListener("click", openImportBackupModal);
+  document.getElementById("hubLogoutButton").addEventListener("click", handleLogout);
 }
 
 function getPricingBaseCost() {
@@ -1759,6 +1900,151 @@ function renderCalculatorScreen() {
   document.getElementById("pricingTargetProfitWrap").hidden = state.pricing.mode !== "profit";
   document.getElementById("pricingBaseCost").textContent = R(getPricingBaseCost());
   renderCalculatorProfiles();
+}
+
+function parseDailyCloseValues(rawValue) {
+  const raw = String(rawValue || "").trim();
+  if (!raw) return 0;
+  const matches = raw.match(/-?\d+(?:[.,]\d{3})*(?:[.,]\d{1,2})?|-?\d+(?:[.,]\d+)?/g) || [];
+  return matches.reduce((sum, token) => {
+    const clean = token.trim();
+    const lastComma = clean.lastIndexOf(",");
+    const lastDot = clean.lastIndexOf(".");
+    const decimalSeparator = lastComma > lastDot ? "," : ".";
+    let normalized = clean;
+    if (lastComma >= 0 && lastDot >= 0) {
+      normalized = clean
+        .replace(new RegExp(`\\${decimalSeparator === "," ? "." : ","}`, "g"), "")
+        .replace(decimalSeparator, ".");
+    } else if (lastComma >= 0) {
+      normalized = clean.replace(/\./g, "").replace(",", ".");
+    } else {
+      const parts = clean.split(".");
+      if (parts.length > 2) normalized = parts.join("");
+    }
+    const value = Number(normalized);
+    return Number.isFinite(value) ? sum + value : sum;
+  }, 0);
+}
+
+function getDailyCloseEntries() {
+  return getPlatforms().map((platform) => {
+    const sales = parseDailyCloseValues(document.getElementById(`dailyCloseSales_${platform.key}`)?.value || "");
+    const returns = parseDailyCloseValues(document.getElementById(`dailyCloseReturns_${platform.key}`)?.value || "");
+    return {
+      platform,
+      sales,
+      returns,
+      net: sales - returns
+    };
+  });
+}
+
+function buildDailyCloseReport(entries = getDailyCloseEntries()) {
+  const activeEntries = entries.filter(({ sales, returns }) => sales !== 0 || returns !== 0);
+  const blocks = activeEntries.map(({ platform, sales, returns }) => [
+    `*Total ${platform.name}*`,
+    "*_Vendas_*",
+    `*${R(sales)}*`,
+    "*_Devolu\u00e7\u00f5es_*",
+    `*${R(returns)}*`,
+    "==================="
+  ].join("\n"));
+  const salesTotal = activeEntries.reduce((sum, item) => sum + item.sales, 0);
+  const returnsTotal = activeEntries.reduce((sum, item) => sum + item.returns, 0);
+  const netTotal = salesTotal - returnsTotal;
+  const totalsBlock = `*TOTAL:*\n*_Vendas_*: *${R(salesTotal)}*\n*_Devolu\u00e7\u00f5es_*: *${R(returnsTotal)}*\n*_Total_*: *${R(netTotal)}*`;
+  return blocks.length ? `${blocks.join("\n")}\n${totalsBlock}` : totalsBlock;
+}
+
+function updateDailyClosePreview() {
+  const entries = getDailyCloseEntries();
+  const preview = document.getElementById("dailyClosePreview");
+  const totals = document.getElementById("dailyCloseTotals");
+  if (preview) preview.value = buildDailyCloseReport(entries);
+  if (totals) {
+    const salesTotal = entries.reduce((sum, item) => sum + item.sales, 0);
+    const returnsTotal = entries.reduce((sum, item) => sum + item.returns, 0);
+    totals.innerHTML = `
+      <div><span>Vendas</span><strong>${R(salesTotal)}</strong></div>
+      <div><span>Devolucoes</span><strong>${R(returnsTotal)}</strong></div>
+      <div><span>Total</span><strong>${R(salesTotal - returnsTotal)}</strong></div>
+    `;
+  }
+  entries.forEach(({ platform, sales, returns, net }) => {
+    const salesEl = document.getElementById(`dailyCloseSalesTotal_${platform.key}`);
+    const returnsEl = document.getElementById(`dailyCloseReturnsTotal_${platform.key}`);
+    const netEl = document.getElementById(`dailyCloseNetTotal_${platform.key}`);
+    if (salesEl) salesEl.textContent = R(sales);
+    if (returnsEl) returnsEl.textContent = R(returns);
+    if (netEl) netEl.textContent = R(net);
+  });
+}
+
+function renderDailyCloseScreen() {
+  document.getElementById("dailyCloseTitle").textContent = "Fechamento Diario";
+  const dateInput = document.getElementById("dailyCloseDate");
+  if (dateInput && !dateInput.value) dateInput.valueAsDate = new Date();
+  const grid = document.getElementById("dailyClosePlatformGrid");
+  grid.innerHTML = getPlatforms().map((platform) => `
+    <article class="daily-close-platform">
+      <div class="daily-close-platform-head">
+        ${platformBadge(platform)}
+        <div class="daily-close-platform-net" id="dailyCloseNetTotal_${escapeAttribute(platform.key)}">${R(0)}</div>
+      </div>
+      <div class="daily-close-input-grid">
+        <label class="fg">
+          <span class="flabel">Vendas</span>
+          <textarea class="finput daily-close-input" id="dailyCloseSales_${escapeAttribute(platform.key)}" data-daily-close-input placeholder="3229,99 + 120,00"></textarea>
+        </label>
+        <label class="fg">
+          <span class="flabel">Devolucoes</span>
+          <textarea class="finput daily-close-input" id="dailyCloseReturns_${escapeAttribute(platform.key)}" data-daily-close-input placeholder="1097,18"></textarea>
+        </label>
+      </div>
+      <div class="daily-close-platform-totals">
+        <div><span>Vendas</span><strong id="dailyCloseSalesTotal_${escapeAttribute(platform.key)}">${R(0)}</strong></div>
+        <div><span>Devolucoes</span><strong id="dailyCloseReturnsTotal_${escapeAttribute(platform.key)}">${R(0)}</strong></div>
+      </div>
+    </article>
+  `).join("");
+  updateDailyClosePreview();
+}
+
+function downloadDailyCloseReport() {
+  updateDailyClosePreview();
+  const report = document.getElementById("dailyClosePreview")?.value || buildDailyCloseReport();
+  const date = document.getElementById("dailyCloseDate")?.value || new Date().toISOString().slice(0, 10);
+  const blob = new Blob([report], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `fechamento-diario-${date}.txt`;
+  link.click();
+  URL.revokeObjectURL(url);
+  toast("Relatorio TXT gerado");
+}
+
+async function copyDailyCloseReport() {
+  updateDailyClosePreview();
+  const report = document.getElementById("dailyClosePreview")?.value || buildDailyCloseReport();
+  try {
+    await navigator.clipboard.writeText(report);
+    toast("Texto copiado");
+  } catch (error) {
+    const preview = document.getElementById("dailyClosePreview");
+    preview?.focus();
+    preview?.select();
+    toast("Selecione o texto para copiar");
+  }
+}
+
+function clearDailyClose() {
+  document.querySelectorAll("[data-daily-close-input]").forEach((input) => {
+    input.value = "";
+  });
+  updateDailyClosePreview();
+  toast("Fechamento limpo");
 }
 
 function renderTabs() {
@@ -2158,6 +2444,47 @@ function renderProjection() {
   const compareLabel = previousTotals
     ? `${previousName}${comparison.cutoffDay ? ` ate dia ${comparison.cutoffDay}` : ""}`
     : "";
+  const platformProjections = projection.platforms
+    .filter((item) => item.realizedGross > 0 || item.projectedGross > 0)
+    .sort((a, b) => b.projectedGross - a.projectedGross);
+  const maxProjectedPlatform = platformProjections.reduce((max, item) => Math.max(max, item.projectedGross), 0);
+  const projectedPlatformTotal = platformProjections.reduce((sum, item) => sum + item.projectedGross, 0);
+  const platformProjectionHtml = platformProjections.length
+    ? platformProjections.map((item) => {
+      const platform = getPlatformByKey(item.key);
+      if (!platform) return "";
+      const percentOfTotal = projectedPlatformTotal > 0 ? (item.projectedGross / projectedPlatformTotal) * 100 : 0;
+      const barWidth = maxProjectedPlatform > 0 ? Math.max(4, (item.projectedGross / maxProjectedPlatform) * 100) : 0;
+      return `
+        <div class="projection-platform-row">
+          <div class="projection-platform-main">
+            ${platformBadge(platform)}
+            <div class="projection-platform-track" aria-hidden="true">
+              <div class="projection-platform-fill" style="width:${barWidth.toFixed(1)}%;background:${getPlatformVisualColor(platform)}"></div>
+            </div>
+          </div>
+          <div class="projection-platform-stats">
+            <div>
+              <span>Projecao</span>
+              <strong>${RS(item.projectedGross)}</strong>
+            </div>
+            <div>
+              <span>Media diaria</span>
+              <strong>${RS(item.dailyAverage)}</strong>
+            </div>
+            <div>
+              <span>Realizado</span>
+              <strong>${RS(item.realizedGross)}</strong>
+            </div>
+            <div>
+              <span>Participacao</span>
+              <strong>${percentOfTotal.toFixed(1)}%</strong>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join("")
+    : `<div class="projection-platform-empty">Cadastre vendas por plataforma para ver a projecao detalhada.</div>`;
 
   document.getElementById("projectionGrid").innerHTML = `
     <div class="projection-card">
@@ -2188,6 +2515,18 @@ function renderProjection() {
       <div class="projection-value" style="color:var(--accent)">${RS(projection.projectedNet)}</div>
       <div class="projection-sub">Taxa atual de devolução: ${projection.currentReturnRate.toFixed(1)}%</div>
       <div class="projection-meta">Realizado ate agora: ${RS(totals.net)}</div>
+    </div>
+    <div class="projection-card projection-platform-card">
+      <div class="projection-platform-head">
+        <div>
+          <div class="projection-label">Projecao de Vendas por Plataforma</div>
+          <div class="projection-sub">Estimativa calculada pela mesma media diaria do mes atual</div>
+        </div>
+        <div class="projection-platform-total">${RS(projectedPlatformTotal)}</div>
+      </div>
+      <div class="projection-platform-list">
+        ${platformProjectionHtml}
+      </div>
     </div>
   `;
 }
@@ -2730,6 +3069,16 @@ function bindEvents() {
   document.getElementById("calculatorBackToHubButton").addEventListener("click", openHubScreen);
   document.getElementById("calculatorOpenDashboardButton").addEventListener("click", openDashboardScreen);
   document.getElementById("calculatorManagePlatformsButton").addEventListener("click", openSetupEditor);
+  document.getElementById("dailyCloseBackToHubButton").addEventListener("click", openHubScreen);
+  document.getElementById("dailyCloseOpenDashboardButton").addEventListener("click", openDashboardScreen);
+  document.getElementById("dailyCloseManagePlatformsButton").addEventListener("click", openSetupEditor);
+  document.getElementById("dailyClosePlatformGrid").addEventListener("input", (event) => {
+    if (event.target.closest("[data-daily-close-input]")) updateDailyClosePreview();
+  });
+  document.getElementById("dailyCloseDate").addEventListener("change", updateDailyClosePreview);
+  document.getElementById("downloadDailyCloseButton").addEventListener("click", downloadDailyCloseReport);
+  document.getElementById("copyDailyCloseButton").addEventListener("click", copyDailyCloseReport);
+  document.getElementById("clearDailyCloseButton").addEventListener("click", clearDailyClose);
   document.getElementById("registerSaleButton").addEventListener("click", addSale);
   document.getElementById("clearSaleButton").addEventListener("click", clearSale);
   document.getElementById("saveReturnsButton").addEventListener("click", saveReturns);

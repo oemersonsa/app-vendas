@@ -4,11 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Dashboard de Vendas</title>
-<link rel="icon" type="image/svg+xml" href="./favicon.svg">
-<link rel="stylesheet" href="./styles.css">
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/styles/styles.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" defer></script>
-<script src="./app.js" defer></script>
+<script src="/scripts/app.js" defer></script>
 </head>
 <body>
 <div class="app">
@@ -331,6 +331,49 @@
         </div>
       </div>
       <div class="pricing-platform-grid" id="pricingPlatformGrid"></div>
+    </main>
+  </section>
+
+  <section class="screen daily-close-screen" id="dailyCloseScreen" hidden>
+    <header>
+      <div class="header-left">
+        <button class="btn btn-secondary" id="dailyCloseBackToHubButton" type="button">Menu</button>
+        <button class="btn btn-secondary" id="dailyCloseOpenDashboardButton" type="button">Dashboard</button>
+      </div>
+      <div class="logo header-brand"><div class="logo-dot"></div><span id="dailyCloseTitle">Fechamento Diario</span></div>
+      <div class="header-right">
+        <button class="btn btn-secondary" id="dailyCloseManagePlatformsButton" type="button">Plataformas</button>
+      </div>
+    </header>
+    <main class="daily-close-main">
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Fechamento Diario</div>
+            <div class="card-sub">Digite vendas e devolucoes por plataforma. Use Enter, + ou ; para somar varios valores.</div>
+          </div>
+          <div class="daily-close-date">
+            <label class="flabel" for="dailyCloseDate">Data do fechamento</label>
+            <input class="finput" id="dailyCloseDate" type="date">
+          </div>
+        </div>
+        <div class="daily-close-grid" id="dailyClosePlatformGrid"></div>
+      </div>
+      <div class="card daily-close-report-card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Relatorio TXT</div>
+            <div class="card-sub">O texto abaixo fica no mesmo formato do envio diario.</div>
+          </div>
+        </div>
+        <div class="daily-close-totals" id="dailyCloseTotals"></div>
+        <textarea class="daily-close-preview" id="dailyClosePreview" readonly></textarea>
+        <div class="actions-row">
+          <button class="btn btn-primary" id="downloadDailyCloseButton" type="button">Baixar TXT</button>
+          <button class="btn btn-secondary" id="copyDailyCloseButton" type="button">Copiar Texto</button>
+          <button class="btn btn-secondary" id="clearDailyCloseButton" type="button">Limpar</button>
+        </div>
+      </div>
     </main>
   </section>
 </div>

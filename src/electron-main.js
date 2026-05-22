@@ -3,9 +3,9 @@ const fs = require("fs");
 
 const { app, BrowserWindow, shell } = require("electron");
 
-process.env.PORT = "0";
+process.env.PORT = process.env.PORT || "37171";
 process.env.HOST = "127.0.0.1";
-process.env.APP_ORIGIN = "http://127.0.0.1";
+process.env.APP_ORIGIN = `http://127.0.0.1:${process.env.PORT}`;
 //process.env.SQLITE_DATABASE_PATH = path.join(app.getPath("userData"), "data", "dashboard-vendas.sqlite");
 // Adicione junto com as outras variáveis de ambiente
 process.env.SQLITE_DATA_DIR = app.getPath("userData");
@@ -41,9 +41,15 @@ try {
 let mainWindow = null;
 let serverInfo = null;
 
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!gotSingleInstanceLock) {
+  app.quit();
+}
+
 async function createWindow() {
   writeStartupLog("starting local server");
-  serverInfo = await startServer({ port: 0, host: "127.0.0.1" });
+  serverInfo = await startServer({ port: Number(process.env.PORT), host: "127.0.0.1" });
   writeStartupLog(`local server ready ${serverInfo.url}`);
 
   mainWindow = new BrowserWindow({
@@ -54,6 +60,7 @@ async function createWindow() {
     show: false,
     autoHideMenuBar: true,
     title: "Dashboard de Vendas",
+    icon: path.join(__dirname, "..", "public", "assets", "icon.ico"),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false
@@ -73,20 +80,28 @@ async function createWindow() {
   writeStartupLog("window loaded");
 }
 
-app.whenReady().then(() => {
-  createWindow().catch((error) => {
-    console.error("Falha ao iniciar o app desktop:", error);
-    app.quit();
+if (gotSingleInstanceLock) {
+  app.whenReady().then(() => {
+    createWindow().catch((error) => {
+      console.error("Falha ao iniciar o app desktop:", error);
+      app.quit();
+    });
+
+    app.on("activate", () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        createWindow().catch((error) => {
+          console.error("Falha ao reabrir o app desktop:", error);
+        });
+      }
+    });
   });
 
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow().catch((error) => {
-        console.error("Falha ao reabrir o app desktop:", error);
-      });
-    }
+  app.on("second-instance", () => {
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
   });
-});
+}
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();

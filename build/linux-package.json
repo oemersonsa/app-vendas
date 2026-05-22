@@ -1,17 +1,11 @@
 {
   "name": "dashboard-vendas",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Dashboard de Vendas",
-  "author": "Seu Nome",
   "main": "src/electron-main.js",
-  "scripts": {
-    "start": "electron .",
-    "build:win": "electron-builder --win",
-    "build:linux": "electron-builder --linux",
-    "build:deb": "electron-builder --linux deb"
-  },
+  "author": "Emerson Santos",
   "build": {
-    "appId": "com.dashboard.vendas",
+    "appId": "com.seuapp.dashboard-vendas",
     "productName": "Dashboard Vendas",
     "directories": {
       "output": "dist"
@@ -19,22 +13,8 @@
     "files": [
       "src/**/*",
       "public/**/*",
-      "node_modules/**/*",
       "package.json"
     ],
-    "win": {
-      "target": ["nsis", "portable"],
-      "icon": "public/assets/icon.ico",
-      "signAndEditExecutable": false,
-      "forceCodeSigning": false
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "installerIcon": "public/assets/icon.ico",
-      "uninstallerIcon": "public/assets/icon.ico",
-      "createDesktopShortcut": true
-    },
     "linux": {
       "target": [
         "deb",
@@ -57,5 +37,9 @@
         "libgbm1"
       ]
     }
+  },
+  "scripts": {
+    "build:linux": "electron-builder --linux",
+    "build:deb": "electron-builder --linux deb"
   }
 }

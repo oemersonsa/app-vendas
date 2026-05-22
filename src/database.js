@@ -4,13 +4,14 @@ const path = require("path");
 const { DatabaseSync } = require("node:sqlite");
 
 const IS_ELECTRON = !!process.versions?.electron;
+const PROJECT_ROOT = path.resolve(__dirname, "..");
 
 function getDefaultDataDir() {
-  if (!IS_ELECTRON) return path.join(__dirname, ".data");
+  if (!IS_ELECTRON) return path.join(PROJECT_ROOT, ".data");
   try {
     return require("electron").app.getPath("userData");
   } catch {
-    return path.join(__dirname, ".data");
+    return path.join(PROJECT_ROOT, ".data");
   }
 }
 

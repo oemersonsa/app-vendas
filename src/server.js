@@ -5,12 +5,15 @@ const crypto = require("crypto");
 const { URL } = require("url");
 const database = require("./database");
 
-loadEnvFile(path.join(__dirname, ".env"));
+const PROJECT_ROOT = path.resolve(__dirname, "..");
+const PUBLIC_DIR = path.join(PROJECT_ROOT, "public");
+
+loadEnvFile(path.join(PROJECT_ROOT, ".env"));
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = String(process.env.HOST || "0.0.0.0");
 const APP_ORIGIN = String(process.env.APP_ORIGIN || `http://localhost:${PORT}`).replace(/\/$/, "");
-const DATA_DIR = process.env.SQLITE_DATA_DIR || path.join(__dirname, ".data");
+const DATA_DIR = process.env.SQLITE_DATA_DIR || path.join(PROJECT_ROOT, ".data");
 const SESSION_STORE_FILE = path.join(DATA_DIR, "sessions.json");
 
 // ─── Rate limiting ────────────────────────────────────────────────────────────
@@ -23,9 +26,12 @@ const rateLimitMap = new Map(); // ip -> { count, windowStart }
 const STATIC_FILES = new Map([
   ["/", "index.html"],
   ["/index.html", "index.html"],
-  ["/app.js", "app.js"],
-  ["/styles.css", "styles.css"],
-  ["/favicon.svg", "favicon.svg"],
+  ["/scripts/app.js", "scripts/app.js"],
+  ["/styles/styles.css", "styles/styles.css"],
+  ["/assets/favicon.svg", "assets/favicon.svg"],
+  ["/app.js", "scripts/app.js"],
+  ["/styles.css", "styles/styles.css"],
+  ["/favicon.svg", "assets/favicon.svg"],
 ]);
 
 // ─── In-memory state ─────────────────────────────────────────────────────────
@@ -487,7 +493,7 @@ function serveStatic(req, res, url) {
     sendText(res, 404, "Not found");
     return;
   }
-  const filePath = path.join(__dirname, mapped);
+  const filePath = path.join(PUBLIC_DIR, mapped);
   if (!fs.existsSync(filePath)) {
     sendText(res, 404, "Not found");
     return;
@@ -500,15 +506,17 @@ function serveStatic(req, res, url) {
 }
 
 // ─── Periodic cleanup (replace per-request cleanup) ──────────────────────────
-setInterval(() => {
+const rateLimitCleanupTimer = setInterval(() => {
   const now = Date.now();
   // Clean rate limit map entries from old windows
   for (const [ip, entry] of rateLimitMap) {
     if (now - entry.windowStart > RATE_LIMIT_WINDOW_MS * 2) rateLimitMap.delete(ip);
   }
 }, 5 * 60_000);
+rateLimitCleanupTimer.unref?.();
 
-setInterval(cleanupExpiredSessions, 60 * 60_000);
+const sessionCleanupTimer = setInterval(cleanupExpiredSessions, 60 * 60_000);
+sessionCleanupTimer.unref?.();
 
 // ─── HTTP server ──────────────────────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
