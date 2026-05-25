@@ -1573,7 +1573,7 @@ main {
 
 .rkpis {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
   margin-bottom: 16px;
 }
@@ -1587,6 +1587,22 @@ main {
 
 .rkpi {
   text-align: center;
+}
+
+.rkpis .rkpi:nth-child(1) {
+  order: 1;
+}
+
+.rkpis .rkpi:nth-child(4) {
+  order: 2;
+}
+
+.rkpis .rkpi:nth-child(2) {
+  order: 3;
+}
+
+.rkpis .rkpi:nth-child(3) {
+  order: 4;
 }
 
 .rkpi-label,
