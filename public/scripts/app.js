@@ -60,6 +60,7 @@ const PRICING_DEFAULTS = {
   shippingSubsidy: 0,
   targetMargin: 20,
   targetProfit: 20,
+  manualPrice: 0,
   mode: "margin",
   profiles: {}
 };
@@ -75,12 +76,19 @@ const MARKETPLACE_PRICING_PRESETS = {
   },
   shopee: {
     label: "Shopee",
-    commissionRate: 14,
+    commissionRate: 20,
     transactionRate: 0,
     fixedFee: 4,
     extraShippingCost: 0,
+    feeTiers: [
+      { min: 0, max: 7.99, commissionRate: 50, fixedFee: 0 },
+      { min: 8, max: 79.99, commissionRate: 20, fixedFee: 4 },
+      { min: 80, max: 99.99, commissionRate: 14, fixedFee: 16 },
+      { min: 100, max: 199.99, commissionRate: 14, fixedFee: 20 },
+      { min: 200, max: null, commissionRate: 14, fixedFee: 26 }
+    ],
     sourceType: "estimated",
-    note: "Estimativa editavel. Revise conforme CPF ou CNPJ, frete gratis e campanhas ativas."
+    note: "Referencia 2026 por faixa de preco: 50% ate R$7,99; 20% + R$4 ate R$79,99; 14% com taxa fixa de R$16, R$20 ou R$26 acima disso. Revise campanhas, CPF/CNPJ e regras do Seller Center."
   },
   shein: {
     label: "Shein",
@@ -112,20 +120,20 @@ const MARKETPLACE_PRICING_PRESETS = {
   tiktok: {
     label: "TikTok",
     commissionRate: 6,
-    transactionRate: 0,
-    fixedFee: 0,
+    transactionRate: 6,
+    fixedFee: 4,
     extraShippingCost: 0,
     sourceType: "estimated",
-    note: "Estimativa editavel. Revise conforme campanha e regras atuais da TikTok Shop."
+    note: "Estimativa 2026: 6% de comissao base + 6% para frete/programa + R$4 por item. Adicione comissao de afiliado/creator em Taxa Extra quando usar esse canal."
   },
   kwai: {
     label: "Kwai",
-    commissionRate: 8,
+    commissionRate: 20,
     transactionRate: 0,
-    fixedFee: 0,
+    fixedFee: 4,
     extraShippingCost: 0,
     sourceType: "estimated",
-    note: "Estimativa editável. Confirme no painel da sua operação antes de usar em massa."
+    note: "Estimativa 2026 para operacao normal: cerca de 20% + R$4 por item. Incentivos de entrada podem reduzir a taxa temporariamente."
   }
 };
 
@@ -322,15 +330,31 @@ function getPricingPreset(platform) {
   return candidates.map((key) => MARKETPLACE_PRICING_PRESETS[key]).find(Boolean) || null;
 }
 
+function normalizeFeeTiers(feeTiers = []) {
+  if (!Array.isArray(feeTiers)) return [];
+  return feeTiers
+    .map((tier) => ({
+      min: Number(tier.min ?? 0),
+      max: tier.max === null || tier.max === undefined || tier.max === "" ? null : Number(tier.max),
+      commissionRate: Number(tier.commissionRate || 0),
+      fixedFee: Number(tier.fixedFee || 0)
+    }))
+    .filter((tier) => Number.isFinite(tier.min) && Number.isFinite(tier.commissionRate) && Number.isFinite(tier.fixedFee))
+    .sort((a, b) => a.min - b.min);
+}
+
 function normalizePricingProfile(platform, profile = {}) {
   const preset = getPricingPreset(platform) || {};
+  const isCustom = profile.sourceType === "custom";
+  const source = isCustom ? profile : { ...profile, ...preset };
   return {
-    commissionRate: Number(profile.commissionRate ?? preset.commissionRate ?? 0),
-    transactionRate: Number(profile.transactionRate ?? preset.transactionRate ?? 0),
-    fixedFee: Number(profile.fixedFee ?? preset.fixedFee ?? 0),
-    extraShippingCost: Number(profile.extraShippingCost ?? preset.extraShippingCost ?? 0),
-    sourceType: String(profile.sourceType || preset.sourceType || "custom"),
-    note: String(profile.note || preset.note || "Personalize com os custos reais da sua operação.")
+    commissionRate: Number(source.commissionRate ?? 0),
+    transactionRate: Number(source.transactionRate ?? 0),
+    fixedFee: Number(source.fixedFee ?? 0),
+    extraShippingCost: Number(source.extraShippingCost ?? 0),
+    feeTiers: normalizeFeeTiers(source.feeTiers),
+    sourceType: String(source.sourceType || "custom"),
+    note: String(source.note || "Personalize com os custos reais da sua operação.")
   };
 }
 
@@ -342,6 +366,7 @@ function normalizePricing(pricing = {}, platforms = getPlatforms()) {
     shippingSubsidy: Number(pricing.shippingSubsidy || 0),
     targetMargin: Number(pricing.targetMargin || 0),
     targetProfit: Number(pricing.targetProfit || 0),
+    manualPrice: Number(pricing.manualPrice || 0),
     mode: pricing.mode === "profit" ? "profit" : "margin",
     profiles: {}
   };
@@ -1812,9 +1837,37 @@ function getPricingBaseCost() {
     + Number(state.pricing.shippingSubsidy || 0);
 }
 
-function calculatePlatformPrice(profile) {
-  const variableRate = (Number(profile.commissionRate || 0) + Number(profile.transactionRate || 0)) / 100;
-  const fixedCosts = getPricingBaseCost() + Number(profile.fixedFee || 0) + Number(profile.extraShippingCost || 0);
+function isPriceInTier(price, tier) {
+  return price >= Number(tier.min || 0) && (tier.max === null || price <= Number(tier.max));
+}
+
+function getProfileFeeTiers(profile) {
+  return normalizeFeeTiers(profile.feeTiers);
+}
+
+function getFeeConfigForPrice(profile, price) {
+  const feeTiers = getProfileFeeTiers(profile);
+  if (!feeTiers.length) {
+    return {
+      commissionRate: Number(profile.commissionRate || 0),
+      fixedFee: Number(profile.fixedFee || 0),
+      feeTier: null
+    };
+  }
+  const feeTier = feeTiers.find((tier) => isPriceInTier(price, tier)) || feeTiers[feeTiers.length - 1];
+  return {
+    commissionRate: Number(feeTier.commissionRate || 0),
+    fixedFee: Number(feeTier.fixedFee || 0),
+    feeTier
+  };
+}
+
+function calculatePriceWithFeeConfig(profile, feeConfig) {
+  const variableRate = (Number(feeConfig.commissionRate || 0) + Number(profile.transactionRate || 0)) / 100;
+  const baseCost = getPricingBaseCost();
+  const fixedFee = Number(feeConfig.fixedFee || 0);
+  const shippingCost = Number(profile.extraShippingCost || 0);
+  const fixedCosts = baseCost + fixedFee + shippingCost;
   const targetMarginRate = Number(state.pricing.targetMargin || 0) / 100;
   let idealPrice = 0;
 
@@ -1833,9 +1886,129 @@ function calculatePlatformPrice(profile) {
   return {
     idealPrice,
     variableFees,
+    fixedFee,
+    shippingCost,
+    baseCost,
+    commissionRate: Number(feeConfig.commissionRate || 0),
+    transactionRate: Number(profile.transactionRate || 0),
     profit,
     profitMargin: idealPrice > 0 ? (profit / idealPrice) * 100 : 0
   };
+}
+
+function calculatePlatformPrice(profile) {
+  const feeTiers = getProfileFeeTiers(profile);
+  if (!feeTiers.length) {
+    return calculatePriceWithFeeConfig(profile, {
+      commissionRate: Number(profile.commissionRate || 0),
+      fixedFee: Number(profile.fixedFee || 0)
+    });
+  }
+
+  for (const tier of feeTiers) {
+    const result = calculatePriceWithFeeConfig(profile, tier);
+    if (result && isPriceInTier(result.idealPrice, tier)) {
+      return { ...result, feeTier: tier };
+    }
+  }
+
+  return null;
+}
+
+function calculateSalePriceResult(profile, salePrice) {
+  const price = Number(salePrice || 0);
+  if (price <= 0) return null;
+  const feeConfig = getFeeConfigForPrice(profile, price);
+  const variableRate = (Number(feeConfig.commissionRate || 0) + Number(profile.transactionRate || 0)) / 100;
+  const baseCost = getPricingBaseCost();
+  const fixedFee = Number(feeConfig.fixedFee || 0);
+  const shippingCost = Number(profile.extraShippingCost || 0);
+  const fixedCosts = baseCost + fixedFee + shippingCost;
+  const variableFees = price * variableRate;
+  const profit = price - variableFees - fixedCosts;
+  return {
+    idealPrice: price,
+    variableFees,
+    fixedFee,
+    shippingCost,
+    baseCost,
+    commissionRate: Number(feeConfig.commissionRate || 0),
+    transactionRate: Number(profile.transactionRate || 0),
+    profit,
+    profitMargin: price > 0 ? (profit / price) * 100 : 0,
+    feeTier: feeConfig.feeTier
+  };
+}
+
+function getPsychologicalPriceOptions(price) {
+  const value = Number(price || 0);
+  if (value <= 0) return [];
+  const bases = [
+    Math.ceil(value),
+    Math.ceil(value) - 0.01,
+    Math.floor(value) + 0.9
+  ];
+  return [...new Set(bases
+    .filter((option) => option > 0)
+    .map((option) => Number(option.toFixed(2)))
+    .filter((option) => option >= value * 0.96)
+    .sort((a, b) => a - b)
+  )].slice(0, 3);
+}
+
+function renderPricingBreakdown(result) {
+  if (!result) return "";
+  const fixedTotal = Number(result.baseCost || 0) + Number(result.fixedFee || 0) + Number(result.shippingCost || 0);
+  return `
+    <div class="pricing-breakdown">
+      <div><span>Custo base</span><strong>${R(result.baseCost)}</strong></div>
+      <div><span>Taxa fixa</span><strong>${R(result.fixedFee)}</strong></div>
+      <div><span>Frete repasse</span><strong>${R(result.shippingCost)}</strong></div>
+      <div><span>Taxas variaveis</span><strong>${R(result.variableFees)}</strong></div>
+      <div><span>Lucro</span><strong>${R(result.profit)}</strong></div>
+      <div><span>Total</span><strong>${R(result.idealPrice)}</strong></div>
+      <div class="pricing-breakdown-total"><span>Composicao</span><strong>${R(fixedTotal)} + ${R(result.variableFees)} + ${R(result.profit)}</strong></div>
+    </div>
+  `;
+}
+
+function renderManualPriceResult(profile) {
+  const manualResult = calculateSalePriceResult(profile, state.pricing.manualPrice);
+  if (!manualResult) return "";
+  const statusClass = manualResult.profit < 0 ? "danger" : manualResult.profitMargin < 10 ? "warning" : "success";
+  return `
+    <div class="pricing-manual ${statusClass}">
+      <div>
+        <span>Vendendo por ${R(manualResult.idealPrice)}</span>
+        <strong>${R(manualResult.profit)} de lucro</strong>
+      </div>
+      <div>
+        <span>Margem real</span>
+        <strong>${manualResult.profitMargin.toFixed(1)}%</strong>
+      </div>
+    </div>
+  `;
+}
+
+function renderPsychologicalOptions(platformKey, profile, result) {
+  if (!result) return "";
+  const options = getPsychologicalPriceOptions(result.idealPrice);
+  if (!options.length) return "";
+  const buttons = options.map((price) => {
+    const rounded = calculateSalePriceResult(profile, price);
+    return `
+      <button class="pricing-round-button" type="button" data-pricing-manual-price="${price.toFixed(2)}">
+        <span>${R(price)}</span>
+        <strong>${rounded ? `${rounded.profitMargin.toFixed(1)}%` : "-"}</strong>
+      </button>
+    `;
+  }).join("");
+  return `
+    <div class="pricing-rounding" data-platform-key="${escapeAttribute(platformKey)}">
+      <span>Arredondar e testar margem</span>
+      <div>${buttons}</div>
+    </div>
+  `;
 }
 
 function renderCalculatorProfiles() {
@@ -1843,11 +2016,18 @@ function renderCalculatorProfiles() {
   container.innerHTML = getPlatforms().map((platform) => {
     const profile = state.pricing.profiles[platform.key] || normalizePricingProfile(platform);
     const result = calculatePlatformPrice(profile);
+    const feeTiers = getProfileFeeTiers(profile);
+    const hasFeeTiers = feeTiers.length > 0;
     const sourceBadge = profile.sourceType === "official"
       ? "Taxa base publica"
       : profile.sourceType === "estimated"
         ? "Taxa inicial estimada"
         : "Taxa personalizada";
+    const commissionValue = result ? result.commissionRate : Number(profile.commissionRate || 0);
+    const fixedFeeValue = result ? result.fixedFee : Number(profile.fixedFee || 0);
+    const tierNote = hasFeeTiers && result?.feeTier
+      ? `<div class="pricing-note">Faixa aplicada: ${R(result.feeTier.min)} a ${result.feeTier.max === null ? "sem limite" : R(result.feeTier.max)} - ${result.feeTier.commissionRate.toFixed(1)}% + ${R(result.feeTier.fixedFee)}.</div>`
+      : "";
     return `
       <article class="pricing-card">
         <div class="pricing-card-head">
@@ -1860,7 +2040,7 @@ function renderCalculatorProfiles() {
         <div class="pricing-grid">
           <label class="fg">
             <span class="flabel">Comissao %</span>
-            <input class="finput" type="number" step="0.1" min="0" data-pricing-profile="${platform.key}" data-field="commissionRate" value="${Number(profile.commissionRate || 0).toFixed(1)}">
+            <input class="finput" type="number" step="0.1" min="0" data-pricing-profile="${platform.key}" data-field="commissionRate" value="${Number(commissionValue || 0).toFixed(1)}" ${hasFeeTiers ? "disabled" : ""}>
           </label>
           <label class="fg">
             <span class="flabel">Taxa Extra %</span>
@@ -1868,13 +2048,17 @@ function renderCalculatorProfiles() {
           </label>
           <label class="fg">
             <span class="flabel">Taxa Fixa R$</span>
-            <input class="finput" type="number" step="0.01" min="0" data-pricing-profile="${platform.key}" data-field="fixedFee" value="${Number(profile.fixedFee || 0).toFixed(2)}">
+            <input class="finput" type="number" step="0.01" min="0" data-pricing-profile="${platform.key}" data-field="fixedFee" value="${Number(fixedFeeValue || 0).toFixed(2)}" ${hasFeeTiers ? "disabled" : ""}>
           </label>
           <label class="fg">
             <span class="flabel">Frete Repasse R$</span>
             <input class="finput" type="number" step="0.01" min="0" data-pricing-profile="${platform.key}" data-field="extraShippingCost" value="${Number(profile.extraShippingCost || 0).toFixed(2)}">
           </label>
         </div>
+        ${tierNote}
+        ${renderPricingBreakdown(result)}
+        ${renderManualPriceResult(profile)}
+        ${renderPsychologicalOptions(platform.key, profile, result)}
         <div class="pricing-note">${profile.note || "Revise os custos dessa plataforma antes de usar o valor em producao."}</div>
         <div class="pricing-kpis">
           <div><span>Taxas variaveis</span><strong>${result ? R(result.variableFees) : "-"}</strong></div>
@@ -1896,6 +2080,7 @@ function renderCalculatorScreen() {
   document.getElementById("pricingShippingSubsidy").value = Number(state.pricing.shippingSubsidy || 0).toFixed(2);
   document.getElementById("pricingTargetMargin").value = Number(state.pricing.targetMargin || 0).toFixed(1);
   document.getElementById("pricingTargetProfit").value = Number(state.pricing.targetProfit || 0).toFixed(2);
+  document.getElementById("pricingManualPrice").value = Number(state.pricing.manualPrice || 0).toFixed(2);
   document.getElementById("pricingTargetMarginWrap").hidden = state.pricing.mode !== "margin";
   document.getElementById("pricingTargetProfitWrap").hidden = state.pricing.mode !== "profit";
   document.getElementById("pricingBaseCost").textContent = R(getPricingBaseCost());
@@ -2959,11 +3144,33 @@ function applyImportedBackup(payload, mode = "merge") {
   void migrateLegacyLocalAuthIfNeeded();
 }
 
-function updatePricingValue(field, value) {
+function renderCalculatorCalculatedParts() {
+  if (activeAppScreen !== "calculator") return;
+  const activeInput = document.activeElement?.closest?.("[data-pricing-profile]");
+  const activeProfile = activeInput?.dataset?.pricingProfile;
+  const activeField = activeInput?.dataset?.field;
+  const baseCost = document.getElementById("pricingBaseCost");
+  if (baseCost) baseCost.textContent = R(getPricingBaseCost());
+  renderCalculatorProfiles();
+  if (activeProfile && activeField) {
+    const nextInput = [...document.querySelectorAll("[data-pricing-profile]")]
+      .find((input) => input.dataset.pricingProfile === activeProfile && input.dataset.field === activeField);
+    if (nextInput && !nextInput.disabled) {
+      nextInput.focus();
+      const end = nextInput.value.length;
+      nextInput.setSelectionRange?.(end, end);
+    }
+  }
+}
+
+function updatePricingValue(field, value, renderMode = "full") {
   if (!state.pricing) state.pricing = normalizePricing({}, getPlatforms());
   state.pricing[field] = Number(value || 0);
   saveState();
-  if (activeAppScreen === "calculator") renderCalculatorScreen();
+  if (activeAppScreen === "calculator") {
+    if (renderMode === "calculated") renderCalculatorCalculatedParts();
+    else renderCalculatorScreen();
+  }
 }
 
 function updatePricingMode(mode) {
@@ -2981,7 +3188,7 @@ function updatePricingProfileValue(platformKey, field, value) {
   state.pricing.profiles[platformKey][field] = Number(value || 0);
   state.pricing.profiles[platformKey].sourceType = "custom";
   saveState();
-  if (activeAppScreen === "calculator") renderCalculatorScreen();
+  if (activeAppScreen === "calculator") renderCalculatorCalculatedParts();
 }
 
 async function importBackupFile(file, mode = pendingImportMode) {
@@ -3088,21 +3295,28 @@ function bindEvents() {
   document.getElementById("returnMonth").addEventListener("change", renderReturnInputs);
   document.getElementById("pricingModeMargin").addEventListener("click", () => updatePricingMode("margin"));
   document.getElementById("pricingModeProfit").addEventListener("click", () => updatePricingMode("profit"));
-  ["pricingProductCost", "pricingPackagingCost", "pricingExtraCost", "pricingShippingSubsidy", "pricingTargetMargin", "pricingTargetProfit"].forEach((id) => {
+  ["pricingProductCost", "pricingPackagingCost", "pricingExtraCost", "pricingShippingSubsidy", "pricingTargetMargin", "pricingTargetProfit", "pricingManualPrice"].forEach((id) => {
     const field = {
       pricingProductCost: "productCost",
       pricingPackagingCost: "packagingCost",
       pricingExtraCost: "extraCost",
       pricingShippingSubsidy: "shippingSubsidy",
       pricingTargetMargin: "targetMargin",
-      pricingTargetProfit: "targetProfit"
+      pricingTargetProfit: "targetProfit",
+      pricingManualPrice: "manualPrice"
     }[id];
-    document.getElementById(id).addEventListener("change", (event) => updatePricingValue(field, event.target.value));
+    document.getElementById(id).addEventListener("input", (event) => updatePricingValue(field, event.target.value, "calculated"));
+    document.getElementById(id).addEventListener("change", (event) => updatePricingValue(field, event.target.value, "full"));
   });
-  document.getElementById("pricingPlatformGrid").addEventListener("change", (event) => {
+  document.getElementById("pricingPlatformGrid").addEventListener("input", (event) => {
     const input = event.target.closest("[data-pricing-profile]");
     if (!input) return;
     updatePricingProfileValue(input.dataset.pricingProfile, input.dataset.field, input.value);
+  });
+  document.getElementById("pricingPlatformGrid").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-pricing-manual-price]");
+    if (!button) return;
+    updatePricingValue("manualPrice", button.dataset.pricingManualPrice, "full");
   });
 
   document.querySelectorAll(".itab").forEach((button) => {
