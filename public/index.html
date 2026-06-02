@@ -134,7 +134,10 @@
       </div>
       <div class="logo header-brand"><div class="logo-dot"></div><span id="brandTitle">Dashboard de Vendas</span></div>
       <div class="header-right">
-        <div class="month-tabs" id="monthTabs"></div>
+        <div class="period-tabs">
+          <div class="year-tabs" id="yearTabs"></div>
+          <div class="month-tabs" id="monthTabs"></div>
+        </div>
         <button class="btn btn-add" id="addMonthButton" type="button">+ Mes</button>
         <button class="btn btn-report" id="reportButton" type="button">Relatorio</button>
       </div>
@@ -391,6 +394,10 @@
       </div>
       <button class="mclose" data-close-modal="addMonthModal" type="button">X</button>
     </div>
+    <label class="fg add-period-year">
+      <span class="flabel">Ano</span>
+      <input class="finput" id="periodYearInput" type="number" min="2000" max="2100" step="1">
+    </label>
     <div class="month-grid" id="monthPicker"></div>
     <div class="actions-row">
       <button class="btn btn-primary" id="confirmAddMonthButton" type="button">Criar Mes</button>

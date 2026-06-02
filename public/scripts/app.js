@@ -306,12 +306,69 @@ function getDefaultMonth() {
   return ALL_MONTHS[new Date().getMonth()];
 }
 
+function getCurrentYear() {
+  return new Date().getFullYear();
+}
+
+function formatPeriodKey(month, year = getCurrentYear()) {
+  return `${year}-${normalizeMonthName(month)}`;
+}
+
+function parsePeriodKey(period) {
+  const raw = String(period || "").trim();
+  const fallbackMonth = getDefaultMonth();
+  const fallbackYear = getCurrentYear();
+  if (!raw) return { year: fallbackYear, month: fallbackMonth, key: formatPeriodKey(fallbackMonth, fallbackYear) };
+
+  const yearFirst = raw.match(/^(\d{4})[-_\s/]+(.+)$/);
+  const yearLast = raw.match(/^(.+?)[-_\s/]+(\d{4})$/);
+  const year = Number(yearFirst?.[1] || yearLast?.[2] || fallbackYear);
+  const monthPart = yearFirst?.[2] || yearLast?.[1] || raw;
+  const month = normalizeMonthName(monthPart);
+  return { year, month, key: formatPeriodKey(month, year) };
+}
+
+function normalizePeriodKey(period) {
+  return parsePeriodKey(period).key;
+}
+
+function getPeriodMonth(period) {
+  return parsePeriodKey(period).month;
+}
+
+function getPeriodYear(period) {
+  return parsePeriodKey(period).year;
+}
+
+function getPeriodLabel(period) {
+  const parsed = parsePeriodKey(period);
+  return `${parsed.month} ${parsed.year}`;
+}
+
+function getShortPeriodLabel(period) {
+  const parsed = parsePeriodKey(period);
+  return SHORT[parsed.month] || parsed.month;
+}
+
+function sortPeriodKeys(periods) {
+  return [...periods].sort((a, b) => {
+    const pa = parsePeriodKey(a);
+    const pb = parsePeriodKey(b);
+    if (pa.year !== pb.year) return pa.year - pb.year;
+    return ALL_MONTHS.indexOf(pa.month) - ALL_MONTHS.indexOf(pb.month);
+  });
+}
+
+function getPeriodYears(periods = Object.keys(state.db || {})) {
+  return [...new Set(periods.map((period) => getPeriodYear(period)))].sort((a, b) => a - b);
+}
+
 function defaultState() {
   return {
     auth: null,
     platforms: [],
     db: {},
-    currentMonth: getDefaultMonth(),
+    currentMonth: formatPeriodKey(getDefaultMonth(), getCurrentYear()),
     pricing: clone(PRICING_DEFAULTS),
     currentScreen: "hub"
   };
@@ -471,7 +528,7 @@ function convertLegacyBackup(payload) {
   const platforms = inferPlatformsFromLegacyData(dashboardData);
   const db = {};
   const normalizedMonths = Object.keys(dashboardData).map((month) => {
-    const normalized = normalizeMonthName(month);
+    const normalized = normalizePeriodKey(month);
     db[normalized] = dashboardData[month];
     return normalized;
   });
@@ -480,7 +537,7 @@ function convertLegacyBackup(payload) {
     auth: null,
     platforms,
     db,
-    currentMonth: payload?.currentMonth ? normalizeMonthName(payload.currentMonth) : (normalizedMonths[normalizedMonths.length - 1] || getDefaultMonth())
+    currentMonth: payload?.currentMonth ? normalizePeriodKey(payload.currentMonth) : (normalizedMonths[normalizedMonths.length - 1] || formatPeriodKey(getDefaultMonth()))
   };
 }
 
@@ -497,7 +554,7 @@ function mergeImportedState(restoredState) {
   state.platforms = mergedPlatforms;
 
   Object.keys(restoredState.db || {}).forEach((month) => {
-    const normalizedMonth = normalizeMonthName(month);
+    const normalizedMonth = normalizePeriodKey(month);
     if (!state.db[normalizedMonth]) {
       state.db[normalizedMonth] = normalizeMonthData(restoredState.db[month]);
       return;
@@ -534,10 +591,11 @@ function mergeImportedState(restoredState) {
     currentMonthData.days = sortDays(currentMonthData.days.map((day) => normalizeDay(day)));
   });
 
-  if (restoredState.currentMonth && state.db[restoredState.currentMonth]) {
-    state.currentMonth = restoredState.currentMonth;
+  const restoredCurrentMonth = normalizePeriodKey(restoredState.currentMonth);
+  if (restoredState.currentMonth && state.db[restoredCurrentMonth]) {
+    state.currentMonth = restoredCurrentMonth;
   } else if (!state.db[state.currentMonth]) {
-    state.currentMonth = Object.keys(state.db).pop() || getDefaultMonth();
+    state.currentMonth = sortPeriodKeys(Object.keys(state.db)).pop() || formatPeriodKey(getDefaultMonth());
   }
 
   ensureMonthData(state.currentMonth);
@@ -618,7 +676,8 @@ function normalizeMonthData(monthData = {}, platforms = getPlatforms()) {
 
 function ensureStateMonths(targetState) {
   if (!targetState.platforms.length) return;
-  const currentMonth = targetState.currentMonth || getDefaultMonth();
+  const currentMonth = normalizePeriodKey(targetState.currentMonth || formatPeriodKey(getDefaultMonth()));
+  targetState.currentMonth = currentMonth;
   if (!targetState.db[currentMonth]) {
     const returns = {};
     targetState.platforms.forEach((platform) => {
@@ -638,13 +697,14 @@ function normalizeState(raw) {
     auth: normalizeAuth(raw?.auth),
     platforms: normalizedPlatforms,
     db: {},
-    currentMonth: raw?.currentMonth || base.currentMonth,
+    currentMonth: normalizePeriodKey(raw?.currentMonth || base.currentMonth),
     pricing: clone(PRICING_DEFAULTS),
     currentScreen: isKnownAppScreen(raw?.currentScreen) ? raw.currentScreen : "hub"
   };
 
   Object.keys(rawDb).forEach((month) => {
-    next.db[month] = rawDb[month];
+    const normalizedMonth = normalizePeriodKey(month);
+    next.db[normalizedMonth] = rawDb[month];
   });
 
   if (!next.platforms.length && !Object.keys(next.db).length) {
@@ -655,7 +715,7 @@ function normalizeState(raw) {
       next.db[month] = normalizeMonthData(next.db[month], next.platforms);
     });
     if (!next.db[next.currentMonth]) {
-      const months = Object.keys(next.db);
+      const months = sortPeriodKeys(Object.keys(next.db));
       next.currentMonth = months[months.length - 1] || base.currentMonth;
     }
     ensureStateMonths(next);
@@ -776,7 +836,7 @@ function applyBusinessState(serverState = {}) {
   const normalized = normalizeState({
     ...serverState,
     auth: state.auth,
-    currentMonth: serverState.currentMonth || state.currentMonth || getDefaultMonth(),
+    currentMonth: serverState.currentMonth || state.currentMonth || formatPeriodKey(getDefaultMonth()),
     currentScreen: serverState.currentScreen || state.currentScreen || "hub",
     pricing: serverState.pricing || state.pricing
   });
@@ -803,7 +863,7 @@ async function loadBusinessStateFromServer({ migrateLocal = false } = {}) {
       if (legacy) {
         state.platforms = legacy.platforms;
         state.db = legacy.db;
-        state.currentMonth = legacy.currentMonth;
+        state.currentMonth = normalizePeriodKey(legacy.currentMonth);
         state.pricing = legacy.pricing;
         state.currentScreen = legacy.currentScreen || state.currentScreen || "hub";
         saveState();
@@ -1194,27 +1254,25 @@ function getReturnRate(returns, sales) {
 }
 
 function getMonthDays(month) {
-  const monthIndex = ALL_MONTHS.indexOf(month);
+  const parsed = parsePeriodKey(month);
+  const monthIndex = ALL_MONTHS.indexOf(parsed.month);
   if (monthIndex < 0) return 30;
-  return new Date(getCurrentYear(), monthIndex + 1, 0).getDate();
+  return new Date(parsed.year, monthIndex + 1, 0).getDate();
 }
 
 function getMonthIndexByName(month) {
-  return ALL_MONTHS.indexOf(month);
-}
-
-function getCurrentYear() {
-  return new Date().getFullYear();
+  return ALL_MONTHS.indexOf(getPeriodMonth(month));
 }
 
 function getSuggestedInputDate(month) {
+  const parsed = parsePeriodKey(month);
   const monthIndex = getMonthIndexByName(month);
   if (monthIndex < 0) return "";
   const today = new Date();
   const day = Math.min(today.getDate(), getMonthDays(month));
   const monthNum = String(monthIndex + 1).padStart(2, "0");
   const dayNum = String(day).padStart(2, "0");
-  return `${getCurrentYear()}-${monthNum}-${dayNum}`;
+  return `${parsed.year}-${monthNum}-${dayNum}`;
 }
 
 function syncSaleDateWithMonth(silent = false) {
@@ -1228,11 +1286,12 @@ function syncSaleDateWithMonth(silent = false) {
 }
 
 function getWeekBuckets(monthName, days) {
+  const parsed = parsePeriodKey(monthName);
   const monthIndex = getMonthIndexByName(monthName);
   if (monthIndex < 0) return [];
 
   const totalDays = getMonthDays(monthName);
-  const firstWeekday = new Date(getCurrentYear(), monthIndex, 1).getDay();
+  const firstWeekday = new Date(parsed.year, monthIndex, 1).getDay();
   const ranges = [];
   let startDay = 1;
   let firstWeekLength = 7 - firstWeekday;
@@ -1325,9 +1384,7 @@ function calcTotals(month, options = {}) {
 
 function getComparisonPeriod(month) {
   // Ordenar meses em ordem cronológica (Janeiro → Dezembro)
-  const sortedMonths = Object.keys(state.db).sort((a, b) => {
-    return ALL_MONTHS.indexOf(a) - ALL_MONTHS.indexOf(b);
-  });
+  const sortedMonths = sortPeriodKeys(Object.keys(state.db));
   
   // Encontrar o mês anterior na ordem cronológica
   const currentIndex = sortedMonths.indexOf(month);
@@ -1382,7 +1439,7 @@ function calcProjection(month) {
 }
 
 function prevMonth(month) {
-  const months = Object.keys(state.db);
+  const months = sortPeriodKeys(Object.keys(state.db));
   const index = months.indexOf(month);
   return index > 0 ? months[index - 1] : null;
 }
@@ -1741,7 +1798,7 @@ function renderHubScreen() {
   if (!shell) return;
 
   ensureMonthData(state.currentMonth);
-  const month = state.currentMonth || getDefaultMonth();
+  const month = state.currentMonth || formatPeriodKey(getDefaultMonth());
   const totals = calcTotals(month);
   const platforms = getPlatforms();
   const activePlatforms = platforms.filter((platform) => Number(totals.sales[platform.key] || 0) > 0);
@@ -2234,16 +2291,29 @@ function clearDailyClose() {
 
 function renderTabs() {
   // ORDEM CORRETA: meses em ordem cronológica (Jan → Dez)
-  const months = Object.keys(state.db).sort((a, b) => {
-    return ALL_MONTHS.indexOf(a) - ALL_MONTHS.indexOf(b);
-  });
+  const allMonths = sortPeriodKeys(Object.keys(state.db));
+  const currentYear = getPeriodYear(state.currentMonth);
+  const years = getPeriodYears(allMonths);
+  const months = allMonths.filter((month) => getPeriodYear(month) === currentYear);
+  const yearTabs = document.getElementById("yearTabs");
+  if (yearTabs) {
+    yearTabs.innerHTML = years
+      .map((year) => `<button class="year-tab ${year === currentYear ? "active" : ""}" data-year="${year}" type="button">${year}</button>`)
+      .join("");
+  }
   
   document.getElementById("monthTabs").innerHTML = months
-    .map((month) => `<button class="month-tab ${month === state.currentMonth ? "active" : ""}" data-month="${month}" type="button">${SHORT[month] || month}</button>`)
+    .map((month) => `<button class="month-tab ${month === state.currentMonth ? "active" : ""}" data-month="${month}" type="button">${getShortPeriodLabel(month)}</button>`)
     .join("");
 
-  const options = months
-    .map((month) => `<option value="${month}"${month === state.currentMonth ? " selected" : ""}>${month}</option>`)
+  const options = years
+    .map((year) => {
+      const yearOptions = allMonths
+        .filter((month) => getPeriodYear(month) === year)
+        .map((month) => `<option value="${month}"${month === state.currentMonth ? " selected" : ""}>${getPeriodLabel(month)}</option>`)
+        .join("");
+      return `<optgroup label="${year}">${yearOptions}</optgroup>`;
+    })
     .join("");
 
   ["inputMonth", "returnMonth"].forEach((id) => {
@@ -2278,13 +2348,21 @@ function renderDashboardShell() {
 }
 
 function switchMonth(month) {
-  state.currentMonth = month;
+  state.currentMonth = normalizePeriodKey(month);
   saveState();
   renderTabs();
   const inputMonth = document.getElementById("inputMonth");
-  if (inputMonth) inputMonth.value = month;
+  if (inputMonth) inputMonth.value = state.currentMonth;
   syncSaleDateWithMonth(true);
   renderAll();
+}
+
+function switchYear(year) {
+  const targetYear = Number(year);
+  const months = sortPeriodKeys(Object.keys(state.db)).filter((month) => getPeriodYear(month) === targetYear);
+  if (!months.length) return;
+  const currentMonthName = getPeriodMonth(state.currentMonth);
+  switchMonth(months.find((month) => getPeriodMonth(month) === currentMonthName) || months[months.length - 1]);
 }
 
 function renderKPIs() {
@@ -2294,11 +2372,11 @@ function renderKPIs() {
   const previousTotals = comparison.previousTotals;
   const returnsPercent = getReturnRate(totals.totalRet, totals.gross);
   const compareLabel = previousTotals
-    ? `${previousName}${comparison.cutoffDay ? ` ate dia ${comparison.cutoffDay}` : ""}`
-    : state.currentMonth;
+    ? `${getPeriodLabel(previousName)}${comparison.cutoffDay ? ` ate dia ${comparison.cutoffDay}` : ""}`
+    : getPeriodLabel(state.currentMonth);
 
   document.getElementById("kpiRow").innerHTML = `
-    <div class="kpi-card"><div class="kpi-label">Faturamento Bruto</div><div class="kpi-value">${RS(totals.gross)}</div><div class="kpi-change">${previousTotals ? `${varH(totals.gross, previousTotals.gross)} vs ${compareLabel}` : state.currentMonth}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Faturamento Bruto</div><div class="kpi-value">${RS(totals.gross)}</div><div class="kpi-change">${previousTotals ? `${varH(totals.gross, previousTotals.gross)} vs ${compareLabel}` : getPeriodLabel(state.currentMonth)}</div></div>
     <div class="kpi-card"><div class="kpi-label">Faturamento Liquido</div><div class="kpi-value">${RS(totals.net)}</div><div class="kpi-change">${previousTotals ? `${varH(totals.net, previousTotals.net)} vs ${compareLabel}` : dash}</div></div>
     <div class="kpi-card"><div class="kpi-label">Pedidos</div><div class="kpi-value">${totals.orders}</div><div class="kpi-change">${previousTotals ? `${varH(totals.orders, previousTotals.orders)} vs ${compareLabel}` : dash}</div><div class="kpi-change" style="color:var(--muted)">${totals.orders > 0 ? `${RS(totals.gross / totals.orders)} por pedido` : "Sem pedidos lançados"}</div></div>
     <div class="kpi-card"><div class="kpi-label">Devolucoes</div><div class="kpi-value">${RS(totals.totalRet)}</div><div class="kpi-change">${previousTotals ? `${varH(totals.totalRet, previousTotals.totalRet)} vs ${compareLabel}` : dash}</div><div class="kpi-change" style="color:var(--muted)">${returnsPercent.toFixed(1)}% das vendas</div><div class="returns-bar"><div class="returns-fill" style="width:${Math.min(returnsPercent, 100)}%"></div></div></div>
@@ -2565,12 +2643,12 @@ function renderMonthCompare() {
   const previousName = comparison.previousName;
   const previousTotals = comparison.previousTotals;
   const previousLabel = previousTotals && comparison.cutoffDay
-    ? `${previousName} ate dia ${comparison.cutoffDay}`
-    : previousName;
+    ? `${getPeriodLabel(previousName)} ate dia ${comparison.cutoffDay}`
+    : (previousName ? getPeriodLabel(previousName) : "");
 
   let html = `<div class="compare-grid">
     <div class="compare-card compare-card-current">
-      <div class="compare-month">${state.currentMonth}</div>
+      <div class="compare-month">${getPeriodLabel(state.currentMonth)}</div>
       <div class="compare-value compare-value-current">${RS(totals.net)}</div>
       <div class="compare-meta">Bruto: ${RS(totals.gross)}</div>
       <div class="compare-meta compare-meta-neg">Dev: ${RS(totals.totalRet)}</div>
@@ -2627,7 +2705,7 @@ function renderProjection() {
   const previousName = comparison.previousName;
   const previousTotals = comparison.previousTotals;
   const compareLabel = previousTotals
-    ? `${previousName}${comparison.cutoffDay ? ` ate dia ${comparison.cutoffDay}` : ""}`
+    ? `${getPeriodLabel(previousName)}${comparison.cutoffDay ? ` ate dia ${comparison.cutoffDay}` : ""}`
     : "";
   const platformProjections = projection.platforms
     .filter((item) => item.realizedGross > 0 || item.projectedGross > 0)
@@ -2771,13 +2849,14 @@ function addSale() {
 
   const parts = dateValue.split("-");
   const selectedMonthIndex = getMonthIndexByName(month);
+  const selectedYear = getPeriodYear(month);
   if (selectedMonthIndex < 0) {
     toast("Mes invalido");
     return;
   }
-  if (Number(parts[1]) !== selectedMonthIndex + 1) {
+  if (Number(parts[0]) !== selectedYear || Number(parts[1]) !== selectedMonthIndex + 1) {
     document.getElementById("inputDate").value = getSuggestedInputDate(month);
-    toast("A data foi ajustada para o mês selecionado");
+    toast("A data foi ajustada para o período selecionado");
     return;
   }
   const label = `${parts[2]}/${parts[1]}`;
@@ -2812,7 +2891,7 @@ function addSale() {
   saveState();
   if (month === state.currentMonth) renderAll();
   clearSale();
-  toast(`Vendas registradas em ${month}`);
+  toast(`Vendas registradas em ${getPeriodLabel(month)}`);
 }
 
 function clearSale() {
@@ -2836,30 +2915,43 @@ function saveReturns() {
 
   saveState();
   if (month === state.currentMonth) renderAll();
-  toast(`Devolucoes salvas para ${month}`);
+  toast(`Devolucoes salvas para ${getPeriodLabel(month)}`);
 }
 
 function openAddMonth() {
   closeHeaderMenu();
   newMonthSel = null;
-  const existing = Object.keys(state.db);
+  const currentYear = getPeriodYear(state.currentMonth);
+  const yearInput = document.getElementById("periodYearInput");
+  if (yearInput) yearInput.value = currentYear;
+  const existing = new Set(Object.keys(state.db).filter((period) => getPeriodYear(period) === currentYear).map((period) => getPeriodMonth(period)));
   document.getElementById("monthPicker").innerHTML = ALL_MONTHS.map((month) => {
-    const done = existing.includes(month);
-    return `<button class="mbtn" ${done ? "disabled" : ""} data-picker-month="${month}" type="button">${SHORT[month] || month}${done ? " ✓" : ""}</button>`;
+    const done = existing.has(month);
+    return `<button class="mbtn" ${done ? "disabled" : ""} data-picker-month="${month}" type="button">${SHORT[month] || month}${done ? " criado" : ""}</button>`;
   }).join("");
   document.getElementById("addMonthModal").classList.add("open");
 }
 
 function openDeleteMonthModal() {
-  const months = Object.keys(state.db);
+  const months = sortPeriodKeys(Object.keys(state.db));
   if (months.length <= 1) {
     toast("Mantenha ao menos um mês no dashboard");
     return;
   }
   pendingDeleteMonth = state.currentMonth;
-  document.getElementById("deleteMonthSubtitle").textContent = `Confirme a exclusão de ${pendingDeleteMonth}.`;
+  document.getElementById("deleteMonthSubtitle").textContent = `Confirme a exclusão de ${getPeriodLabel(pendingDeleteMonth)}.`;
   closeModal("addMonthModal");
   document.getElementById("deleteMonthModal").classList.add("open");
+}
+
+function refreshMonthPickerForYear() {
+  const year = Number(document.getElementById("periodYearInput")?.value || getPeriodYear(state.currentMonth));
+  const existing = new Set(Object.keys(state.db).filter((period) => getPeriodYear(period) === year).map((period) => getPeriodMonth(period)));
+  newMonthSel = null;
+  document.getElementById("monthPicker").innerHTML = ALL_MONTHS.map((month) => {
+    const done = existing.has(month);
+    return `<button class="mbtn" ${done ? "disabled" : ""} data-picker-month="${month}" type="button">${SHORT[month] || month}${done ? " criado" : ""}</button>`;
+  }).join("");
 }
 
 function pickMonth(month, button) {
@@ -2873,13 +2965,15 @@ function confirmAddMonth() {
     toast("Selecione um mês");
     return;
   }
-  ensureMonthData(newMonthSel);
-  state.currentMonth = newMonthSel;
+  const year = Number(document.getElementById("periodYearInput")?.value || getPeriodYear(state.currentMonth));
+  const period = formatPeriodKey(newMonthSel, Number.isFinite(year) ? year : getCurrentYear());
+  ensureMonthData(period);
+  state.currentMonth = period;
   saveState();
   closeModal("addMonthModal");
   renderTabs();
   renderAll();
-  toast(`${newMonthSel} criado`);
+  toast(`${getPeriodLabel(period)} criado`);
 }
 
 function confirmDeleteMonth() {
@@ -2889,10 +2983,10 @@ function confirmDeleteMonth() {
   }
 
   delete state.db[pendingDeleteMonth];
-  const remainingMonths = Object.keys(state.db);
+  const remainingMonths = sortPeriodKeys(Object.keys(state.db));
   state.currentMonth = remainingMonths.includes(state.currentMonth)
     ? state.currentMonth
-    : (remainingMonths[remainingMonths.length - 1] || getDefaultMonth());
+    : (remainingMonths[remainingMonths.length - 1] || formatPeriodKey(getDefaultMonth()));
   ensureMonthData(state.currentMonth);
   pendingDeleteMonth = null;
   saveState();
@@ -2982,12 +3076,12 @@ function openReport() {
   const previousName = comparison.previousName;
   const previousTotals = comparison.previousTotals;
   const previousLabel = previousTotals && comparison.cutoffDay
-    ? `${previousName} ate dia ${comparison.cutoffDay}`
-    : previousName;
+    ? `${getPeriodLabel(previousName)} ate dia ${comparison.cutoffDay}`
+    : (previousName ? getPeriodLabel(previousName) : "");
   const active = getPlatforms().filter((platform) => totals.sales[platform.key] > 0 || totals.ret[platform.key] > 0);
   const maxNet = previousTotals ? Math.max(totals.net, previousTotals.net, 1) : Math.max(totals.net, 1);
 
-  document.getElementById("reportTitle").textContent = `Relatorio - ${month} ${getCurrentYear()}`;
+  document.getElementById("reportTitle").textContent = `Relatorio - ${getPeriodLabel(month)}`;
 
   const platformRows = active.map((platform) => {
     const value = totals.sales[platform.key] || 0;
@@ -3016,9 +3110,9 @@ function openReport() {
       <table class="rtable"><thead><tr><th>Plataforma</th><th>Bruto</th><th>Devolucoes</th><th>% Dev.</th><th>Liquido</th><th>vs. Mes Ant.</th></tr></thead><tbody>${platformRows}</tbody><tfoot><tr><td style="color:var(--accent)">Total</td><td>${R(totals.gross)}</td><td class="neg">${R(totals.totalRet)}</td><td style="color:var(--muted)">${totals.gross > 0 ? ((totals.totalRet / totals.gross) * 100).toFixed(1) : 0}%</td><td style="color:var(--accent)">${R(totals.net)}</td><td>${previousTotals ? varH(totals.net, previousTotals.net) : "-"}</td></tr></tfoot></table>
     </div>
     ${previousTotals ? `<div class="msection">
-      <div class="msec-title">Comparativo Visual - ${month} vs ${previousLabel}</div>
+      <div class="msec-title">Comparativo Visual - ${getPeriodLabel(month)} vs ${previousLabel}</div>
       <div class="cvis">
-        <div class="cvis-item"><div class="cvis-month">${month}</div><div class="cvis-val" style="color:var(--accent)">${R(totals.net)}</div><div style="font-size:11px;color:var(--muted);margin-bottom:6px">Bruto: ${R(totals.gross)} · Dev: ${R(totals.totalRet)}</div><div class="cvis-bar"><div class="cvis-fill" style="width:${((totals.net / maxNet) * 100).toFixed(1)}%;background:var(--accent)"></div></div></div>
+        <div class="cvis-item"><div class="cvis-month">${getPeriodLabel(month)}</div><div class="cvis-val" style="color:var(--accent)">${R(totals.net)}</div><div style="font-size:11px;color:var(--muted);margin-bottom:6px">Bruto: ${R(totals.gross)} · Dev: ${R(totals.totalRet)}</div><div class="cvis-bar"><div class="cvis-fill" style="width:${((totals.net / maxNet) * 100).toFixed(1)}%;background:var(--accent)"></div></div></div>
         <div class="cvis-item"><div class="cvis-month">${previousLabel}</div><div class="cvis-val">${R(previousTotals.net)}</div><div style="font-size:11px;color:var(--muted);margin-bottom:6px">Bruto: ${R(previousTotals.gross)} · Dev: ${R(previousTotals.totalRet)}</div><div class="cvis-bar"><div class="cvis-fill" style="width:${((previousTotals.net / maxNet) * 100).toFixed(1)}%;background:var(--accent2)"></div></div></div>
       </div>
       <div class="msec-title">Por Plataforma - barra sólida = atual · transparente = anterior</div>
@@ -3114,7 +3208,7 @@ async function saveNow() {
 function replaceImportedState(restoredState) {
   state.platforms = restoredState.platforms.map((platform) => clone(platform));
   state.db = clone(restoredState.db || {});
-  state.currentMonth = restoredState.currentMonth || getDefaultMonth();
+  state.currentMonth = normalizePeriodKey(restoredState.currentMonth || formatPeriodKey(getDefaultMonth()));
   ensureStateMonths(state);
 }
 
@@ -3291,6 +3385,7 @@ function bindEvents() {
   document.getElementById("saveReturnsButton").addEventListener("click", saveReturns);
   document.getElementById("cancelReturnsButton").addEventListener("click", renderReturnInputs);
   document.getElementById("confirmAddMonthButton").addEventListener("click", confirmAddMonth);
+  document.getElementById("periodYearInput")?.addEventListener("input", refreshMonthPickerForYear);
   document.getElementById("exportReportButton").addEventListener("click", exportReportPNG);
   document.getElementById("returnMonth").addEventListener("change", renderReturnInputs);
   document.getElementById("pricingModeMargin").addEventListener("click", () => updatePricingMode("margin"));
@@ -3333,6 +3428,12 @@ function bindEvents() {
     const monthTab = event.target.closest("[data-month]");
     if (monthTab) {
       switchMonth(monthTab.dataset.month);
+      return;
+    }
+
+    const yearTab = event.target.closest("[data-year]");
+    if (yearTab) {
+      switchYear(yearTab.dataset.year);
       return;
     }
 

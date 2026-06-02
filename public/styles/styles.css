@@ -588,6 +588,14 @@ header {
   padding-left: 3px;
 }
 
+.period-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.year-tabs,
 .month-tabs {
   display: flex;
   gap: 2px;
@@ -598,6 +606,7 @@ header {
   flex-wrap: nowrap;
 }
 
+.year-tab,
 .month-tab {
   padding: 5px 10px;
   border-radius: 6px;
@@ -612,17 +621,25 @@ header {
   white-space: nowrap;
 }
 
+.year-tab:hover,
 .month-tab:hover {
   color: var(--text);
 }
 
+.year-tab.active,
 .month-tab.active {
   background: var(--text);
   color: #fff;
 }
 
+body:not(.light-theme) .year-tab.active,
 body:not(.light-theme) .month-tab.active {
   color: #111318;
+}
+
+.year-tab {
+  font-size: 11px;
+  padding: 4px 9px;
 }
 
 .menu-wrap {
@@ -2606,11 +2623,17 @@ main {
     justify-content: space-between;
   }
 
-  .month-tabs {
+  .period-tabs {
     width: 100%;
     order: 1;
   }
 
+  .year-tabs,
+  .month-tabs {
+    width: 100%;
+  }
+
+  .year-tab,
   .month-tab {
     flex: 1;
     text-align: center;
@@ -2848,6 +2871,11 @@ main {
     grid-template-columns: 1fr;
   }
 
+  .period-tabs {
+    width: 100%;
+  }
+
+  .year-tabs,
   .month-tabs {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2922,11 +2950,12 @@ main {
     gap: 8px;
   }
 
-  .month-tabs {
+  .period-tabs {
     order: 3;
     width: 100%;
   }
 
+  .year-tab,
   .month-tab {
     min-height: 32px;
     font-size: 11px;
